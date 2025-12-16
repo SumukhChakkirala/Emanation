@@ -21,13 +21,15 @@ time_duration = 0.5 # in seconds
 Fs = 25e6# sampling rate.
 f_step = Fs
 
-results_folder_top = os.getcwd() + '/'
-hyper_param_string = 'Results_DiracComb/Plots_withoutEmanationDetection/' + str(int(duty_cycle*100)) + ' pctDutyCycle'
-results_folder = results_folder_top + '/' + hyper_param_string + '/'
-try:
-    os.mkdir(results_folder)
-except OSError as error:
-    print(error)
+results_folder_top = os.getcwd()
+hyper_param_string = os.path.join('Results_DiracComb', 'Plots_withoutEmanationDetection', f"{int(duty_cycle*100)} pctDutyCycle")
+results_folder = os.path.join(results_folder_top, hyper_param_string)
+os.makedirs(results_folder, exist_ok=True)
+
+# helper to save figures into the results folder
+def save_plot(name, **kwargs):
+    filepath = os.path.join(results_folder, name)
+    plt.savefig(filepath, **kwargs) 
 # We are using the sampling rate consistent with the 25MHz slice we are processing for emanations
 Ts = 1/Fs
 SNR_list = np.arange(20,-42,-2)
@@ -72,7 +74,7 @@ if generate_plot_harmonictemplate_flag: # We do not run this everytime since thi
     plt.subplots_adjust(left=0.12, bottom=0.1, right=0.9, top=0.95, wspace=0.25, hspace=0.25)
     plt.tight_layout()
     # plt.savefig(results_folder + 'diraccomb_rectpulse_time_freq.pdf', format='pdf', bbox_inches='tight', pad_inches=.01)
-    plt.savefig(results_folder +addendum_str_plot_filename + 'RectangularPulse' + str(int(duty_cycle*10)) + '_Fh_' + str(int(F_h/1e3)) + '_kHz' + '.' + save_file_type, format=save_file_type,
+    save_plot(addendum_str_plot_filename + 'RectangularPulse' + str(int(duty_cycle*10)) + '_Fh_' + str(int(F_h/1e3)) + '_kHz' + '.' + save_file_type, format=save_file_type,
                 bbox_inches='tight', pad_inches=.01)
     plt.close()
     ####################################################################
@@ -105,7 +107,7 @@ if generate_plot_harmonictemplate_flag: # We do not run this everytime since thi
     plt.tight_layout()
 
     # plt.savefig(results_folder + 'diraccomb_rectpulse_time_freq.pdf', format='pdf', bbox_inches='tight', pad_inches=.01)
-    plt.savefig(results_folder + addendum_str_plot_filename + 'FT_RectangularPulse'+str(int(duty_cycle*10)) + '_Fh_' + str(int(F_h/1e3)) + '_kHz'  + '.' + save_file_type, format=save_file_type,
+    save_plot(addendum_str_plot_filename + 'FT_RectangularPulse'+str(int(duty_cycle*10)) + '_Fh_' + str(int(F_h/1e3)) + '_kHz'  + '.' + save_file_type, format=save_file_type,
                 bbox_inches='tight', pad_inches=.01)
     plt.close()
     ####################################################################
@@ -169,7 +171,7 @@ if generate_plot_harmonictemplate_flag: # We do not run this everytime since thi
     plt.tight_layout()
 
     # plt.savefig(results_folder + 'diraccomb_rectpulse_time_freq.pdf', format='pdf', bbox_inches='tight', pad_inches=.01)
-    plt.savefig(results_folder + addendum_str_plot_filename +'DiracComb' + str(int(duty_cycle*10)) + '_Fh_' + str(int(F_h/1e3)) + '_kHz' + '.' + save_file_type, format=save_file_type,
+    save_plot(addendum_str_plot_filename +'DiracComb' + str(int(duty_cycle*10)) + '_Fh_' + str(int(F_h/1e3)) + '_kHz' + '.' + save_file_type, format=save_file_type,
                 bbox_inches='tight', pad_inches=.01)
     plt.close()
     plt.figure(4)
@@ -204,7 +206,7 @@ if generate_plot_harmonictemplate_flag: # We do not run this everytime since thi
     plt.tight_layout()
 
     #plt.savefig(results_folder + 'diraccomb_rectpulse_time_freq.pdf', format='pdf', bbox_inches='tight', pad_inches=.01)
-    plt.savefig(results_folder + addendum_str_plot_filename +'FT_DiracComb' + str(int(duty_cycle*10)) + '_Fh_' + str(int(F_h/1e3)) + '_kHz' + '.' +save_file_type, format=save_file_type, bbox_inches='tight', pad_inches=.01)
+    save_plot(addendum_str_plot_filename +'FT_DiracComb' + str(int(duty_cycle*10)) + '_Fh_' + str(int(F_h/1e3)) + '_kHz' + '.' +save_file_type, format=save_file_type, bbox_inches='tight', pad_inches=.01)
 
     # plt.show()
     plt.close()
@@ -228,7 +230,7 @@ if generate_plot_harmonictemplate_flag: # We do not run this everytime since thi
     plt.subplots_adjust(left=0.12, bottom=0.1, right=0.9, top=0.95, wspace=0.25, hspace=0.25)
     plt.tight_layout()
     
-    plt.savefig(results_folder +addendum_str_plot_filename + 'PulseTrain' + str(int(duty_cycle*10)) + '_Fh_' + str(int(F_h/1e3)) + '_kHz' +'.' + save_file_type, format=save_file_type, bbox_inches='tight',
+    save_plot(addendum_str_plot_filename + 'PulseTrain' + str(int(duty_cycle*10)) + '_Fh_' + str(int(F_h/1e3)) + '_kHz' +'.' + save_file_type, format=save_file_type, bbox_inches='tight',
                 pad_inches=.01)
 
     # plt.show()
@@ -254,7 +256,7 @@ if generate_plot_harmonictemplate_flag: # We do not run this everytime since thi
     plt.gcf().set_size_inches(15, 10)
     plt.subplots_adjust(left=0.12, bottom=0.1, right=0.9, top=0.95, wspace=0.25, hspace=0.25)
     plt.tight_layout()
-    plt.savefig(results_folder + addendum_str_plot_filename +'FT_PulseTrain' + str(int(duty_cycle*10)) + '_Fh_' + str(int(F_h/1e3)) + '_kHz' +  '.' + save_file_type, format=save_file_type, bbox_inches='tight',
+    save_plot(addendum_str_plot_filename +'FT_PulseTrain' + str(int(duty_cycle*10)) + '_Fh_' + str(int(F_h/1e3)) + '_kHz' +  '.' + save_file_type, format=save_file_type, bbox_inches='tight',
                 pad_inches=.01)
     plt.close()
     results_dict = {}
@@ -308,7 +310,7 @@ if generate_plot_harmonictemplate_flag: # We do not run this everytime since thi
     plt.gcf().set_size_inches(15, 10)
     plt.subplots_adjust(left=0.12,bottom=0.1,right=0.9,top=0.95,wspace=0.25,hspace=0.25)
     plt.tight_layout()
-    plt.savefig(results_folder +addendum_str_plot_filename + 'PSD_PulseTrain' + str(int(duty_cycle*10)) + '_Fh_' + str(int(F_h/1e3)) + '_kHz' +  '.' + save_file_type, format=save_file_type,
+    save_plot(addendum_str_plot_filename + 'PSD_PulseTrain' + str(int(duty_cycle*10)) + '_Fh_' + str(int(F_h/1e3)) + '_kHz' +  '.' + save_file_type, format=save_file_type,
                 bbox_inches='tight', pad_inches=.01)
     plt.close()
 
@@ -420,7 +422,7 @@ for zoom_perc in [100, 30, 6]:
                         wspace=0.25,
                         hspace=0.25)
     plt.tight_layout()
-    plt.savefig(results_folder + addendum_str_plot_filename + '_zp_' + str(zoom_perc) + '_Fh_' + str(int(F_h/1e3)) + '_kHz' +  '.' +save_file_type, format=save_file_type, bbox_inches=None, pad_inches=.01)
+    save_plot(addendum_str_plot_filename + '_zp_' + str(zoom_perc) + '_Fh_' + str(int(F_h/1e3)) + '_kHz' +  '.' +save_file_type, format=save_file_type, bbox_inches=None, pad_inches=.01)
     #plt.show()
 # plt.show()
     plt.close()
@@ -453,7 +455,7 @@ plt.gcf().set_size_inches(15, 10)
 plt.subplots_adjust(left=0.12, bottom=0.1, right=0.9, top=0.95, wspace=0.25, hspace=0.25)
 plt.tight_layout()
 
-plt.savefig(results_folder + addendum_str_plot_filename +'TimeDomainPulseTrain' + '_Fh_' + str(
+save_plot(addendum_str_plot_filename +'TimeDomainPulseTrain' + '_Fh_' + str(
     int(F_h / 1e3)) + '_kHz' + '.' + save_file_type, format=save_file_type, bbox_inches=None,
             pad_inches=.01)
 
@@ -529,7 +531,7 @@ for zoom_perc in [100]:
     plt.gcf().set_size_inches(15, 10)
     plt.subplots_adjust(left=0.12,bottom=0.1, right=0.9,top=0.95,wspace=0.25,hspace=0.25)
     plt.tight_layout()
-    plt.savefig(results_folder + addendum_str_plot_filename +'FreqDomainComparisonPlot' + '_zp_' + str(zoom_perc) + '_Fh_' + str(int(F_h/1e3)) + '_kHz' +  '.' +save_file_type, format=save_file_type, bbox_inches=None, pad_inches=.01)
+    save_plot(addendum_str_plot_filename +'FreqDomainComparisonPlot' + '_zp_' + str(zoom_perc) + '_Fh_' + str(int(F_h/1e3)) + '_kHz' +  '.' +save_file_type, format=save_file_type, bbox_inches=None, pad_inches=.01)
     #plt.show()
 # plt.show()
     plt.close()

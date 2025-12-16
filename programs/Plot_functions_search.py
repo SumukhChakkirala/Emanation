@@ -1,8 +1,8 @@
 import matplotlib.pyplot as plt
 import os
 
-# Set a new known location for all plot saves
-NEW_SAVE_FOLDER = r'C:\Users\Sumukh\Desktop\projects\Emanation\MyPlots'
+# Use env var EMANATION_RESULTS_DIR if set; otherwise default to project Results folder
+NEW_SAVE_FOLDER = os.environ.get('EMANATION_RESULTS_DIR', os.path.join(os.getcwd(), 'Results'))
 os.makedirs(NEW_SAVE_FOLDER, exist_ok=True)
 import os
 import numpy as np

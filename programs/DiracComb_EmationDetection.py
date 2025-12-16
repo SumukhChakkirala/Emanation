@@ -18,8 +18,13 @@ pythonfiles_location = '/Users/venkat/Documents/scisrs/Emanations/Phase1/Emanati
 sys.path.insert(1, pythonfiles_location)
 
 pythonfiles_location = os.getcwd() + '/'
-results_folder_top = r'C:\Users\Sumukh\Desktop\projects\Emanation\MyPlots'
+
+import os
+
+# Use EMANATION_RESULTS_DIR env var if set; otherwise default to project Results folder
+results_folder_top = os.environ.get('EMANATION_RESULTS_DIR', os.path.join(os.getcwd(), 'Results'))
 os.makedirs(results_folder_top, exist_ok=True)
+
 #IQ_folder = '/Users/venkat/Documents/scisrs/Emanations/IQSamples/June16thCollect/LaptopConnectedToMonitorviaAdaptor/Laptop_MonitorViaAdaptor_25MHzSlice/'
 
 from EmanationDetection_search import *
@@ -83,7 +88,7 @@ def Iteration_perHyperParam(scenario_list, scenario_IQfolder_dict, CF_range, fre
 
         # duration_capture = scenario_IQfolder_dict[scenario]['durationcapture_ms']
 
-        results_folder = results_folder + '/SNR_' + str(int(SNR)) + '/'
+        results_folder = os.path.join(results_folder_top, 'Results_DiracComb', 'SNR_minus14', hyper_param_string)
         os.makedirs(results_folder, exist_ok=True)
 
         for CF in CF_range:
