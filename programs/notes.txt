@@ -1,0 +1,104 @@
+# 1. Generate dataset
+& .\.emanation\Scripts\python.exe .\programs\generate_dataset.py --num-samples 5000 --out-file data/pitch_dataset.npz
+
+# 2. Train the CNN
+& .\.emanation\Scripts\python.exe .\programs\train_pitch_cnn.py --data data/pitch_dataset.npz --epochs 100
+
+# 3. Compare with classical baseline
+& .\.emanation\Scripts\python.exe .\programs\evaluate_baseline.py --data data/pitch_dataset.npz --model models/best_pitch_cnn.pt
+
+
+
+
+Training Process Explained
+1. Training Data (Input Features)
+Each training sample consists of:
+
+PSD Vector (shape: [2048]): Log-magnitude Power Spectral Density in dB
+Computed from the IQ signal using Welch's method
+Downsampled to fixed size (2048 bins) for consistent CNN input
+Normalized per-sample (z-score normalization: (psd - mean) / std)
+SNR (scalar): Signal-to-noise ratio in dB, used as auxiliary input
+2. Labels (Targets)
+Each sample has a single ground-truth label:
+
+Fundamental Frequency (f₀) in Hz
+The true pitch/fundamental frequency of the synthetic signal
+Example: 486369.97 Hz, 220000 Hz, etc.
+Normalized for training: (label - mean) / std
+Denormalized after prediction to get Hz
+3. Dataset Generation Process
+From generate_dataset.py:
+
+Generate synthetic signal:
+
+Random fundamental frequency: 100-500 kHz
+Random duty cycle: 5-20%
+Random SNR: -20 to +20 dB
+Creates a pulse train in time domain with Gaussian noise
+Compute PSD:
+
+Apply feature extraction: |IQ|² (power envelope)
+Remove DC bias
+Use Welch's method to compute PSD (averaged over windows)
+Convert to dB: 10*log10(PSD)
+Downsample to 2048 bins
+Save:
+
+PSD vector + label (f₀) + SNR + duty cycle
+4. Training Process
+Step-by-step:
+
+Load dataset → 5000 samples, each with:
+
+Input: PSD [2048 values] + SNR [1 value]
+Label: f₀ in Hz
+Split data:
+
+85% training (4250 samples)
+15% validation (750 samples)
+For each epoch:
+
+Training phase:
+
+For each batch (64 samples):
+Forward pass: prediction = CNN(PSD, SNR)
+Compute loss: MAE = mean(|prediction - true_f0|)
+Backward pass: update weights
+Validation phase:
+
+Evaluate on validation set
+Compute metrics: MAE, accuracy within 5/10/50 Hz
+Save best model when validation MAE improves
+
+5. Model Architecture
+
+Input: PSD [1, 2048] + SNR [1]
+  ↓
+Conv1D layers (extract frequency patterns)
+  ↓
+Pooling & BatchNorm
+  ↓
+Flatten to feature vector [256]
+  ↓
+Concatenate with SNR → [257]
+  ↓
+Fully connected layers [128] → [1]
+  ↓
+Output: Predicted f₀ (scalar, normalized)
+  ↓
+Denormalize → f₀ in Hz
+
+
+6. Loss Function
+MAE (Mean Absolute Error): mean(|predicted_f0 - true_f0|) in Hz
+Directly optimizes for accurate frequency prediction
+Summary
+Training data: 5000 PSD vectors (2048 bins each) + SNR values
+Labels: 5000 fundamental frequencies (f₀) in Hz
+Task: Learn to predict f₀ from PSD
+Loss: MAE in Hz
+Result: A CNN that can estimate the fundamental frequency given a PSD
+
+The model learns the relationship between the spectral pattern (PSD) and the underlying pitch (f₀), implicitly learning to identify harmonic peaks and their spacing.
+
