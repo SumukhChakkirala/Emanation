@@ -128,7 +128,13 @@ def run_classical_pipeline(psd_db, f_range, fs, config, debug=False):
                 print("DEBUG: EstimateHarmonic failed")
             return None
         
+        # Extract scalar fundamental frequency
         fundamental_harmonic = result_harm[0]
+        if isinstance(fundamental_harmonic, (list, np.ndarray)):
+            fundamental_harmonic = float(fundamental_harmonic[0])
+        else:
+            fundamental_harmonic = float(fundamental_harmonic)
+        
         if debug:
             print(f"DEBUG: Estimated f0: {fundamental_harmonic:.2f} Hz")
         return fundamental_harmonic

@@ -31,7 +31,7 @@ class CREPE(nn.Module):
     """
     def __init__(self, capacity_multiplier: int = 32, dropout: float = 0.25):
         super(CREPE, self).__init__()
-        
+        #
         c = capacity_multiplier  # 32 for 'full', 4 for 'tiny'
 
         # Layer 1: [1, 1024] -> [1024 filters, 128 width]
