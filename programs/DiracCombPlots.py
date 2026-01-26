@@ -16,9 +16,9 @@ T_h = 1/F_h # time gap between two rectangular pulses
 duty_cycle = 0.1 # assuming a square pulse
 T = T_h*duty_cycle # duration of pulse
 F = 1/T # main lobe width at +/- F Hz
-time_duration = 0.5 # in seconds
-#num_pts = 10000 # number of points we get in a single period of a rectangular pulse
 Fs = 25e6# sampling rate.
+time_duration = 1040/Fs # Generate exactly 1040 samples for Crepe
+#num_pts = 10000 # number of points we get in a single period of a rectangular pulse
 f_step = Fs
 
 results_folder_top = os.getcwd()
@@ -48,7 +48,7 @@ print("IQ_dict_filename: ", iq_dict_filename)
 if compute_PSD_noAvg:
     dur_ensemble = time_duration
 else:
-    dur_ensemble = 0.001
+    dur_ensemble = min(0.001, time_duration)
 # Pulse has a zero portion, and non-zero portion within a period
 perc_overlap = 75
 
