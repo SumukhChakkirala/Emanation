@@ -1,18 +1,18 @@
 """
 Generate CREPE-compatible synthetic RF signal data with varied pitches.
 
-This script replicates the CREPE training data characteristics:
-- 16 kHz sampling rate
+This script uses the Dirac comb + rectangular pulse approach from DiracCombPlots.py:
+- Creates a rectangular pulse of width T = duty_cycle * T_h
+- Creates a Dirac comb with period T_h = 1/F_h
+- Convolves them to get a pulse train (real-valued baseband signal)
+- Adds complex Gaussian noise (I + jQ) at various SNR levels
+
+Key characteristics:
+- 16 kHz sampling rate (CREPE standard)
 - 1024 samples per frame (64 ms)
 - Varied fundamental frequencies (32.7 Hz to 1975.5 Hz)
 - Dense pitch coverage across all 360 bins
-- Multiple SNR levels for robustness
-
-Key fixes:
-1. Dense pitch coverage - generate samples for ALL 360 bins
-2. Proper train/val split - ensure overlap so model can interpolate
-3. More augmentation - multiple samples per pitch/SNR combination
-4. RF signal generation - complex IQ signals with realistic noise
+- Multiple SNR levels for robustness (matching DiracCombPlots.py: 20 dB to -40 dB)
 """
 
 import numpy as np
@@ -61,107 +61,142 @@ def crepe_bin_to_hz(bin_idx: int) -> float:
 
 
 # =============================================================================
-# RF Signal Generation
+# RF Signal Generation (Dirac Comb + Rectangular Pulse approach)
 # =============================================================================
+
+def generate_dirac_comb_signal(
+    F_h: float, 
+    Fs: float, 
+    duration: float, 
+    duty_cycle: float = 0.1
+) -> np.ndarray:
+    """
+    Generate a pulse train signal using Dirac comb convolved with rectangular pulse.
+    
+    This follows the approach from DiracCombPlots.py:
+    1. Create a rectangular pulse of width T = duty_cycle * T_h
+    2. Create a Dirac comb with period T_h = 1/F_h
+    3. Convolve them to get the pulse train
+    
+    Args:
+        F_h: Fundamental frequency in Hz (pulse repetition rate)
+        Fs: Sampling rate in Hz
+        duration: Duration in seconds
+        duty_cycle: Duty cycle of the pulse (0 to 1)
+    
+    Returns:
+        Real-valued pulse train signal (baseband)
+    """
+    Ts = 1 / Fs  # Sampling period
+    T_h = 1 / F_h  # Period of the pulse train
+    T = T_h * duty_cycle  # Duration of each pulse
+    
+    n_samples = int(duration * Fs)
+    
+    # Create time vector for the full signal
+    t_dc = np.linspace(0, duration, n_samples)
+    
+    # Create one period of rectangular pulse (centered)
+    n_samples_period = int(T_h / Ts)
+    t_rp = np.linspace(0, T_h, n_samples_period)
+    y_rp = np.zeros(len(t_rp), dtype=np.float32)
+    
+    # Center the pulse in the period
+    ps_idx = np.abs(t_rp - (T_h / 2 - T / 2)).argmin()  # pulse start index
+    pe_idx = np.abs(t_rp - (T / 2 + T_h / 2)).argmin()  # pulse end index
+    y_rp[ps_idx:pe_idx] = 1.0
+    
+    # Create Dirac comb
+    dir_c = np.zeros(n_samples, dtype=np.float32)
+    
+    # Place impulses at each period
+    impulse_times = np.arange(T_h, duration, T_h)
+    impulse_indices = np.rint(impulse_times / Ts).astype(int)
+    # Ensure indices are within bounds
+    impulse_indices = impulse_indices[impulse_indices < n_samples]
+    dir_c[impulse_indices] = 1.0
+    
+    # Convolve rectangular pulse with Dirac comb to get pulse train
+    rect_tr = np.convolve(y_rp, dir_c, 'same')
+    
+    # Normalize to unit power
+    power = np.mean(rect_tr ** 2)
+    if power > 0:
+        rect_tr = rect_tr / np.sqrt(power)
+    
+    return rect_tr.astype(np.float32)
+
 
 def generate_harmonic_rf_signal(
     F_h: float, 
     Fs: float, 
     duration: float, 
+    duty_cycle: float = 0.1,
     n_harmonics: int = 8,
     harmonic_decay: float = 1.5,
     phase_noise: bool = True
 ) -> np.ndarray:
     """
-    Generate a complex RF signal with harmonic structure at fundamental frequency F_h.
+    Generate a signal using Dirac comb approach (like DiracCombPlots.py).
     
-    This creates a more realistic signal than pure sinusoids by including:
-    - Multiple harmonics with 1/f^decay amplitude
-    - Random phase offsets per harmonic
-    - Optional phase noise (jitter)
+    This creates a pulse train by convolving a rectangular pulse with a Dirac comb,
+    which naturally produces harmonics at multiples of F_h.
     
     Args:
         F_h: Fundamental frequency in Hz
         Fs: Sampling rate in Hz
         duration: Duration in seconds
-        n_harmonics: Number of harmonics to include
-        harmonic_decay: Harmonic amplitude decay rate (higher = faster decay)
-        phase_noise: Add realistic phase jitter
+        duty_cycle: Duty cycle of the rectangular pulse (0 to 1)
+        n_harmonics: Not used (kept for API compatibility)
+        harmonic_decay: Not used (kept for API compatibility)
+        phase_noise: Not used (kept for API compatibility)
     
     Returns:
-        Complex RF signal (I + jQ)
+        Real-valued pulse train signal (baseband)
     """
-    n_samples = int(duration * Fs)
-    t = np.arange(n_samples) / Fs
-    
-    # Start with zeros
-    signal_I = np.zeros(n_samples, dtype=np.float32)
-    signal_Q = np.zeros(n_samples, dtype=np.float32)
-    
-    for h in range(1, n_harmonics + 1):
-        freq = F_h * h
-        
-        # Only include harmonics below Nyquist
-        if freq < Fs / 2:
-            # Harmonic amplitude decreases with harmonic number
-            amplitude = 1.0 / (h ** harmonic_decay)
-            
-            # Random phase offset for each harmonic
-            phase_I = np.random.uniform(0, 2 * np.pi)
-            phase_Q = np.random.uniform(0, 2 * np.pi)
-            
-            # Add phase noise if requested
-            if phase_noise and h == 1:  # Only on fundamental
-                phase_jitter = np.random.normal(0, 0.01, n_samples)
-                phase_I_vec = 2 * np.pi * freq * t + phase_I + phase_jitter
-                phase_Q_vec = 2 * np.pi * freq * t + phase_Q + phase_jitter
-            else:
-                phase_I_vec = 2 * np.pi * freq * t + phase_I
-                phase_Q_vec = 2 * np.pi * freq * t + phase_Q
-            
-            signal_I += amplitude * np.cos(phase_I_vec)
-            signal_Q += amplitude * np.sin(phase_Q_vec)
-    
-    # Normalize to unit power
-    power = np.mean(signal_I**2 + signal_Q**2)
-    if power > 0:
-        signal_I /= np.sqrt(power)
-        signal_Q /= np.sqrt(power)
-    
-    # Create complex signal
-    complex_signal = signal_I + 1j * signal_Q
-    
-    return complex_signal.astype(np.complex64)
+    # Use the Dirac comb approach
+    return generate_dirac_comb_signal(F_h, Fs, duration, duty_cycle)
 
 
 def add_complex_noise(signal: np.ndarray, snr_db: float, seed: int = None) -> np.ndarray:
     """
     Add complex Gaussian noise to achieve specified SNR.
     
+    This follows the approach from DiracCombPlots.py:
+    - Compute signal variance
+    - Generate complex noise (I + jQ) based on target SNR
+    - Add noise to signal
+    
     Args:
-        signal: Input complex signal
+        signal: Input signal (real or complex)
         snr_db: Target SNR in dB
         seed: Random seed for reproducibility
     
     Returns:
-        noisy_signal: Complex signal with AWGN added
+        noisy_signal: Signal with complex AWGN added
     """
     if seed is not None:
         np.random.seed(seed)
     
-    # Signal power (complex)
-    signal_power = np.mean(np.abs(signal)**2)
+    # Signal variance (following DiracCombPlots approach)
+    var_y = np.var(np.real(signal))
     
-    # Noise power for target SNR
-    noise_power = signal_power / (10 ** (snr_db / 10))
+    # Noise variance for target SNR: var_s = 0.5 * (var_y / 10^(SNR/10))
+    var_s = 0.5 * (var_y / (10 ** (snr_db / 10)))
     
-    # Generate complex Gaussian noise
-    noise_std = np.sqrt(noise_power / 2)  # Split between I and Q
-    noise_I = np.random.normal(0, noise_std, len(signal))
-    noise_Q = np.random.normal(0, noise_std, len(signal))
-    noise = noise_I + 1j * noise_Q
+    # Generate complex Gaussian noise (I + jQ)
+    if seed is not None:
+        np.random.seed(seed)
+    w_s_I = np.random.normal(loc=0, scale=np.sqrt(var_s), size=len(signal))
+    if seed is not None:
+        np.random.seed(seed + 1)
+    w_s_Q = np.random.normal(loc=0, scale=np.sqrt(var_s), size=len(signal))
+    w_s = w_s_I + 1j * w_s_Q
     
-    return signal + noise
+    # Add noise to signal (real signal + complex noise -> complex signal)
+    noisy_signal = signal + w_s
+    
+    return noisy_signal.astype(np.complex64)
 
 
 # =============================================================================
@@ -173,21 +208,20 @@ def generate_crepe_dataset_dense(
     bins_to_generate: List[int] = None,
     snr_list: List[int] = None,
     samples_per_bin_snr: int = 20,
-    n_harmonics: int = 8,
+    duty_cycle: float = 0.1,
     seed: int = 42
 ) -> dict:
     """
     Generate a CREPE-compatible dataset with DENSE pitch coverage.
     
-    KEY FIX: Instead of sparse pitches, we generate samples for many/all CREPE bins
-    so the model learns the full pitch space and can interpolate.
+    Uses the Dirac comb + rectangular pulse approach from DiracCombPlots.py.
     
     Args:
         output_path: Path to save the pickle file
         bins_to_generate: List of CREPE bin indices to generate (None = all 360)
         snr_list: List of SNR values in dB
         samples_per_bin_snr: Number of augmented samples per (bin, SNR) pair
-        n_harmonics: Number of harmonics in signal
+        duty_cycle: Duty cycle of the rectangular pulse (0 to 1)
         seed: Random seed
     
     Returns:
@@ -196,19 +230,20 @@ def generate_crepe_dataset_dense(
     np.random.seed(seed)
     
     if snr_list is None:
-        # Wider SNR range for robustness
-        snr_list = [20, 15, 10, 5, 0, -5, -10, -15, -20]
+        # Wider SNR range for robustness (matching DiracCombPlots.py)
+        snr_list = list(np.arange(20, -42, -2))
     
     if bins_to_generate is None:
         # Generate ALL 360 bins for complete coverage
         bins_to_generate = list(range(CREPE_N_BINS))
     
     print("=" * 80)
-    print("Generating CREPE-Compatible Dataset (DENSE PITCH COVERAGE)")
+    print("Generating CREPE-Compatible Dataset (Dirac Comb Approach)")
     print("=" * 80)
     print(f"\nParameters:")
     print(f"  Sampling rate: {CREPE_FS} Hz")
     print(f"  Frame length: {CREPE_FRAME_LENGTH} samples ({CREPE_FRAME_LENGTH/CREPE_FS*1000:.1f} ms)")
+    print(f"  Duty cycle: {duty_cycle*100:.0f}%")
     print(f"  Number of bins: {len(bins_to_generate)} (out of {CREPE_N_BINS})")
     print(f"  SNR range: {max(snr_list)} dB to {min(snr_list)} dB ({len(snr_list)} levels)")
     print(f"  Samples per (bin, SNR): {samples_per_bin_snr}")
@@ -229,17 +264,14 @@ def generate_crepe_dataset_dense(
         
         for snr in snr_list:
             for aug_idx in range(samples_per_bin_snr):
-                # Generate clean signal with varying characteristics
-                # Vary harmonics and decay for diversity
-                n_harm = np.random.randint(5, n_harmonics + 1)
-                decay = np.random.uniform(1.2, 2.0)
-                phase_noise = np.random.rand() > 0.3  # 70% with phase noise
+                # Vary duty cycle slightly for augmentation
+                dc = duty_cycle * np.random.uniform(0.8, 1.2)
+                dc = np.clip(dc, 0.05, 0.5)  # Keep duty cycle reasonable
                 
-                clean_signal = generate_harmonic_rf_signal(
+                # Generate clean pulse train signal using Dirac comb approach
+                clean_signal = generate_dirac_comb_signal(
                     F_h, CREPE_FS, duration, 
-                    n_harmonics=n_harm,
-                    harmonic_decay=decay,
-                    phase_noise=phase_noise
+                    duty_cycle=dc
                 )
                 
                 # Add noise with deterministic seed for reproducibility
@@ -334,10 +366,10 @@ def visualize_dataset(iq_dict: dict, n_samples: int = 6):
 
 if __name__ == "__main__":
     OUTPUT_DIR = './IQData/'
-    OUTPUT_FILE = 'iq_dict_crepe_dense.pkl'
+    OUTPUT_FILE = 'iq_dict_crepe_dirac_comb.pkl'
     OUTPUT_PATH = os.path.join(OUTPUT_DIR, OUTPUT_FILE)
     
-    # Strategy: Generate dense coverage
+    # Strategy: Generate dense coverage using Dirac comb approach
     # Option 1: ALL 360 bins (takes longer but best results)
     # Option 2: Every 2nd bin = 180 bins (faster, still good)
     # Option 3: Every 3rd bin = 120 bins (balance speed/coverage)
@@ -346,16 +378,19 @@ if __name__ == "__main__":
     # Change to range(360) for full coverage
     bins_to_generate = list(range(0, 360, 2))  # Every other bin
     
+    # Duty cycle (same as DiracCombPlots.py default)
+    duty_cycle = 0.1
+    
     iq_dict = generate_crepe_dataset_dense(
         output_path=OUTPUT_PATH,
         bins_to_generate=bins_to_generate,  # 180 bins
-        snr_list=[20, 15, 10, 5, 0, -5, -10, -15, -20],  # 9 SNR levels
+        snr_list=list(np.arange(20, -42, -2)),  # SNR range matching DiracCombPlots.py
         samples_per_bin_snr=10,  # 10 augmentations per (bin, SNR)
-        n_harmonics=8,
+        duty_cycle=duty_cycle,
         seed=42
     )
     
-    # Total: 180 bins × 9 SNRs × 10 augmentations = 16,200 samples
+    # Total: 180 bins × 31 SNRs × 10 augmentations = 55,800 samples
     
     visualize_dataset(iq_dict, n_samples=6)
     
