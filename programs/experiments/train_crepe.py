@@ -372,7 +372,7 @@ def train_epoch(model, dataloader, criterion, optimizer, device, epoch):
 def main():
     # Configuration
     config = {
-        'data_path': './IQData/iq_dict_crepe_dense.pkl',
+        'data_path': './IQData/iq_dict_crepe_dirac_comb.pkl',
         'batch_size': 32,
         'epochs': 30,
         'lr': 0.0002,  # As per paper

@@ -41,15 +41,20 @@ def main():
         print("STEP 1: Generating Training Data")
         print("=" * 80)
         
-        from generate_crepe_data import generate_crepe_dataset, visualize_dataset
+        from generate_crepe_data import generate_crepe_dataset_dense, visualize_dataset
+        import numpy as np
         
-        OUTPUT_PATH = './IQData/iq_dict_crepe_varied_pitch.pkl'
+        OUTPUT_PATH = './IQData/iq_dict_crepe_dirac_comb.pkl'
         
-        iq_dict = generate_crepe_dataset(
+        # Use every 2nd bin for faster generation (180 bins)
+        bins_to_generate = list(range(0, 360, 2))
+        
+        iq_dict = generate_crepe_dataset_dense(
             output_path=OUTPUT_PATH,
-            n_pitches=50,           # 50 different pitches
-            snr_list=[20, 18, 16, 14, 12, 10, 8, 6, 4, 2, 0, -2, -4, -6, -8, -10],
-            signal_type='sinusoid',
+            bins_to_generate=bins_to_generate,
+            snr_list=list(np.arange(20, -22, -2)),  # 20 to -20 dB
+            samples_per_bin_snr=5,
+            duty_cycle=0.1,
             seed=42
         )
         
@@ -85,7 +90,7 @@ def main():
             print(f"❌ Model not found at {model_path}. Run training first.")
             return
         
-        checkpoint = torch.load(model_path, map_location='cpu')
+        checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
         config = checkpoint['config']
         
         print(f"Loaded model from epoch {checkpoint['epoch']}")
@@ -101,7 +106,6 @@ def main():
             iq_dict=iq_dict,
             snr_range=(-5, 5),  # Harder conditions
             target_length=CREPE_FRAME_LENGTH,
-            n_augment=20,
             gaussian_sigma=config['gaussian_sigma']
         )
         test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
@@ -132,7 +136,7 @@ def main():
     print("=" * 80)
     
     print("\nSummary:")
-    print("  - Data: ./IQData/iq_dict_crepe_varied_pitch.pkl")
+    print("  - Data: ./IQData/iq_dict_crepe_dirac_comb.pkl")
     print("  - Model: ./models_crepe/crepe_best.pth")
     print("  - History: ./models_crepe/training_history.pkl")
     print("  - Visualization: ./dataset_visualization.png")
