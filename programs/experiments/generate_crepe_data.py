@@ -230,8 +230,8 @@ def generate_crepe_dataset_dense(
     np.random.seed(seed)
     
     if snr_list is None:
-        # Wider SNR range for robustness (matching DiracCombPlots.py)
-        snr_list = list(np.arange(20, -42, -2))
+        # SNR range: 15 to 20 dB (high SNR for cleaner signals)
+        snr_list = list(range(15, 21))  # [15, 16, 17, 18, 19, 20]
     
     if bins_to_generate is None:
         # Generate ALL 360 bins for complete coverage
@@ -376,21 +376,21 @@ if __name__ == "__main__":
     
     # For demonstration, use every 2nd bin (180 bins total)
     # Change to range(360) for full coverage
-    bins_to_generate = list(range(0, 360, 2))  # Every other bin
+    bins_to_generate = list(range(0, 360))  # Every other bin
     
     # Duty cycle (same as DiracCombPlots.py default)
     duty_cycle = 0.1
     
     iq_dict = generate_crepe_dataset_dense(
         output_path=OUTPUT_PATH,
-        bins_to_generate=bins_to_generate,  # 180 bins
-        snr_list=list(np.arange(20, -42, -2)),  # SNR range matching DiracCombPlots.py
+        bins_to_generate=bins_to_generate,  # 360 bins
+        snr_list=list(range(15, 21)),  # SNR range: 15 to 20 dB
         samples_per_bin_snr=10,  # 10 augmentations per (bin, SNR)
         duty_cycle=duty_cycle,
         seed=42
     )
     
-    # Total: 180 bins × 31 SNRs × 10 augmentations = 55,800 samples
+    # Total: 180 bins × 6 SNRs × 10 augmentations = 10,800 samples
     
     visualize_dataset(iq_dict, n_samples=6)
     

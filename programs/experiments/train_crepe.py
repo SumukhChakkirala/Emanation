@@ -407,19 +407,19 @@ def main():
     print(f"  Val bins: {len(val_bins)} (every 5th bin)")
     print(f"  Overlap: Validation bins are interspersed with training bins")
     
-    # Create datasets - use high SNR for training
+    # Create datasets - use SNR range 15-20 dB
     # Dataset objects
     train_dataset = CREPEDataset(
         iq_dict=iq_dict,
         bin_list=train_bins,
-        snr_range=(0, 20),  # High SNR for training
+        snr_range=(15, 20),  # SNR between 15 and 20 dB
         gaussian_sigma=config['gaussian_sigma']
     )
     
     val_dataset = CREPEDataset(
         iq_dict=iq_dict,
         bin_list=val_bins,
-        snr_range=(0, 20),  # Same SNR range
+        snr_range=(15, 20),  # Same SNR range
         gaussian_sigma=config['gaussian_sigma']
     )
     
