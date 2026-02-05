@@ -179,55 +179,51 @@ class CREPE(nn.Module):
     - Batch norm + dropout(0.25) in conv layers
     """
     
-    def __init__(self, capacity_multiplier: int = 32, dropout: float = 0.25):
+    def __init__(self, dropout: float = 0.25):
         """
         Args:
-            capacity_multiplier: Channel multiplier (paper uses 32, 48, 64, 96)
             dropout: Dropout rate (paper uses 0.25)
         """
         super(CREPE, self).__init__()
         
-        cap = capacity_multiplier
+        # Standard CREPE Architecture filter counts
+        # L1: 1024 filters, L2-L4: 128 filters, L5: 256 filters, L6: 512 filters
         
-        # Layer 1: conv (1024) -> pool -> (128 after pool)
-        self.conv1 = nn.Conv1d(1, cap, kernel_size=512, stride=4, padding=254)
-        self.bn1 = nn.BatchNorm1d(cap)
+        # Layer 1: conv (1024) -> pool -> (1024 filters)
+        self.conv1 = nn.Conv1d(1, 1024, kernel_size=512, stride=4, padding=254)
+        self.bn1 = nn.BatchNorm1d(1024)
         self.drop1 = nn.Dropout(dropout)
         self.pool1 = nn.MaxPool1d(2, stride=2)
         
-        # Layer 2: conv -> pool -> (64 after pool)
-        self.conv2 = nn.Conv1d(cap, cap, kernel_size=64, stride=1, padding=32)
-        self.bn2 = nn.BatchNorm1d(cap)
+        # Layer 2: conv -> pool -> (128 filters)
+        self.conv2 = nn.Conv1d(1024, 128, kernel_size=64, stride=1, padding=32)
+        self.bn2 = nn.BatchNorm1d(128)
         self.drop2 = nn.Dropout(dropout)
         self.pool2 = nn.MaxPool1d(2, stride=2)
         
-        # Layer 3: conv -> pool -> (32 after pool)
-        self.conv3 = nn.Conv1d(cap, cap * 2, kernel_size=64, stride=1, padding=32)
-        self.bn3 = nn.BatchNorm1d(cap * 2)
+        # Layer 3: conv -> pool -> (128 filters)
+        self.conv3 = nn.Conv1d(128, 128, kernel_size=64, stride=1, padding=32)
+        self.bn3 = nn.BatchNorm1d(128)
         self.drop3 = nn.Dropout(dropout)
         self.pool3 = nn.MaxPool1d(2, stride=2)
         
-        # Layer 4: conv -> pool -> (16 after pool)
-        self.conv4 = nn.Conv1d(cap * 2, cap * 2, kernel_size=64, stride=1, padding=32)
-        self.bn4 = nn.BatchNorm1d(cap * 2)
+        # Layer 4: conv -> pool -> (128 filters)
+        self.conv4 = nn.Conv1d(128, 128, kernel_size=64, stride=1, padding=32)
+        self.bn4 = nn.BatchNorm1d(128)
         self.drop4 = nn.Dropout(dropout)
         self.pool4 = nn.MaxPool1d(2, stride=2)
         
-        # Layer 5: conv -> pool -> (8 after pool)
-        self.conv5 = nn.Conv1d(cap * 2, cap * 4, kernel_size=64, stride=1, padding=32)
-        self.bn5 = nn.BatchNorm1d(cap * 4)
+        # Layer 5: conv -> pool -> (256 filters)
+        self.conv5 = nn.Conv1d(128, 256, kernel_size=64, stride=1, padding=32)
+        self.bn5 = nn.BatchNorm1d(256)
         self.drop5 = nn.Dropout(dropout)
         self.pool5 = nn.MaxPool1d(2, stride=2)
         
-        # Layer 6: conv -> pool -> (4 after pool)
-        self.conv6 = nn.Conv1d(cap * 4, cap * 4, kernel_size=64, stride=1, padding=32)
-        self.bn6 = nn.BatchNorm1d(cap * 4)
+        # Layer 6: conv -> pool -> (512 filters)
+        self.conv6 = nn.Conv1d(256, 512, kernel_size=64, stride=1, padding=32)
+        self.bn6 = nn.BatchNorm1d(512)
         self.drop6 = nn.Dropout(dropout)
         self.pool6 = nn.MaxPool1d(2, stride=2)
-        
-        # After 6 pools of stride 2: 1024 -> 512 -> 256 -> 128 -> 64 -> 32 -> 16
-        # But with stride=4 in conv1: 1024 -> 256 -> 128 -> 64 -> 32 -> 16 -> 8 -> 4
-        # Actual calculation needed - let's compute it properly
         
         # Calculate the actual output size by doing a forward pass
         with torch.no_grad():
@@ -370,13 +366,13 @@ def train_epoch(model, dataloader, criterion, optimizer, device, epoch):
 
 
 def main():
-    # Configuration
+    # Configuration block 
     config = {
         'data_path': './IQData/iq_dict_crepe_dirac_comb.pkl',
         'batch_size': 32,
         'epochs': 30,
         'lr': 0.0002,  # As per paper
-        'capacity': 32,  # Model capacity
+        # 'capacity' removed - using standard CREPE architecture
         'dropout': 0.25,  # As per paper
         'gaussian_sigma': 1.25,  # 25 cents / 20 cents per bin
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
@@ -384,23 +380,23 @@ def main():
     }
     
     print("=" * 80)
-    print("Training CREPE Model - Fixed Version")
+    print("Training CREPE Model - Standard Architecture")
     print("=" * 80)
     print(f"\nConfiguration:")
     for k, v in config.items():
         print(f"  {k}: {v}")
     
-    # Load data
+    # Load dataset
     print(f"\n📂 Loading data from {config['data_path']}...")
     with open(config['data_path'], 'rb') as f:
         iq_dict = pickle.load(f)
     print(f"✓ Loaded {len(iq_dict)} samples")
     
-    # Extract all bins from dataset
+    # Extract all pitch bins from dataset
     all_bins = sorted(list(set([int(k.split('_')[1]) for k in iq_dict.keys()])))
     print(f"✓ Found {len(all_bins)} unique bins (range: {min(all_bins)}-{max(all_bins)})")
     
-    # CRITICAL FIX: Split bins with OVERLAP
+    # Split bins with OVERLAP
     # Use 80% of bins for training, 20% for validation
     # But ensure there's overlap (every 5th bin goes to validation)
     train_bins = [b for i, b in enumerate(all_bins) if i % 5 != 0]
@@ -412,6 +408,7 @@ def main():
     print(f"  Overlap: Validation bins are interspersed with training bins")
     
     # Create datasets - use high SNR for training
+    # Dataset objects
     train_dataset = CREPEDataset(
         iq_dict=iq_dict,
         bin_list=train_bins,
@@ -432,8 +429,8 @@ def main():
                            shuffle=False, num_workers=0)
     
     # Create model
-    print(f"\n🏗️  Creating CREPE model (capacity={config['capacity']})...")
-    model = CREPE(capacity_multiplier=config['capacity'], dropout=config['dropout'])
+    print(f"\n🏗️  Creating CREPE model (Standard Architecture)...")
+    model = CREPE(dropout=config['dropout'])
     device = torch.device(config['device'])
     model = model.to(device)
     
