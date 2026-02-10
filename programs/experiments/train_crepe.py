@@ -428,7 +428,6 @@ def main():
                              shuffle=True, num_workers=0)
     val_loader = DataLoader(val_dataset, batch_size=config['batch_size'], 
                            shuffle=False, num_workers=0)
-    
     # Create model
     print(f"\n🏗️  Creating CREPE model (Standard Architecture)...")
     model = CREPE(dropout=config['dropout'])
