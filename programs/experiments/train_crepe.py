@@ -369,7 +369,7 @@ def main():
     # Configuration block 
     config = {
         'data_path': './IQData/iq_dict_crepe_dirac_comb.pkl',
-        'batch_size': 32,
+        'batch_size': 32, # how many samples are processed together
         'epochs': 30,
         'lr': 0.0002,  # As per paper
         # 'capacity' removed - using standard CREPE architecture
@@ -396,16 +396,17 @@ def main():
     all_bins = sorted(list(set([int(k.split('_')[1]) for k in iq_dict.keys()])))
     print(f"✓ Found {len(all_bins)} unique bins (range: {min(all_bins)}-{max(all_bins)})")
     
-    # Split bins with OVERLAP
-    # Use 80% of bins for training, 20% for validation
-    # But ensure there's overlap (every 5th bin goes to validation)
-    train_bins = [b for i, b in enumerate(all_bins) if i % 5 != 0]
-    val_bins = [b for i, b in enumerate(all_bins) if i % 5 == 0]
+    # Split bins with OVERLAP - 60/20/20 split
+    # Interspersed to ensure coverage across frequency range
+    train_bins = [b for i, b in enumerate(all_bins) if i % 5 not in [0, 1]]  # 60%
+    val_bins = [b for i, b in enumerate(all_bins) if i % 5 == 0]              # 20%
+    test_bins = [b for i, b in enumerate(all_bins) if i % 5 == 1]             # 20%
     
-    print(f"\n📊 Train/Val split:")
-    print(f"  Train bins: {len(train_bins)} (every 4 out of 5 bins)")
-    print(f"  Val bins: {len(val_bins)} (every 5th bin)")
-    print(f"  Overlap: Validation bins are interspersed with training bins")
+    print(f"\n📊 Train/Val/Test split (60/20/20):")
+    print(f"  Train bins: {len(train_bins)} (60%)")
+    print(f"  Val bins: {len(val_bins)} (20%)")
+    print(f"  Test bins: {len(test_bins)} (20%)")
+    print(f"  Overlap: All splits are interspersed for full frequency coverage")
     
     # Create datasets - use SNR range 15-20 dB
     # Dataset objects
@@ -427,7 +428,6 @@ def main():
                              shuffle=True, num_workers=0)
     val_loader = DataLoader(val_dataset, batch_size=config['batch_size'], 
                            shuffle=False, num_workers=0)
-    
     # Create model
     print(f"\n🏗️  Creating CREPE model (Standard Architecture)...")
     model = CREPE(dropout=config['dropout'])
