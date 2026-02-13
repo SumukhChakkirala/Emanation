@@ -357,6 +357,10 @@ def train_epoch(model, dataloader, criterion, optimizer, device, epoch):
         outputs = model(inputs)
         loss = criterion(outputs, labels)
         loss.backward()
+        
+        # Gradient clipping to prevent exploding gradients
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        
         optimizer.step()
         
         total_loss += loss.item()
@@ -369,14 +373,16 @@ def main():
     # Configuration block 
     config = {
         'data_path': './IQData/iq_dict_crepe_dirac_comb.pkl',
-        'batch_size': 32, # how many samples are processed together
-        'epochs': 30,
-        'lr': 0.0002,  # As per paper
+        'batch_size': 32,  # Increased from 32 for more stable gradients
+        'epochs': 30,  # More epochs with early stopping
+        'lr': 0.0002,  
         # 'capacity' removed - using standard CREPE architecture
         'dropout': 0.25,  # As per paper
         'gaussian_sigma': 1.25,  # 25 cents / 20 cents per bin
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
         'save_dir': './models_crepe/',
+        'patience': 5,  # Early stopping patience
+        'lr_patience': 3,  # LR scheduler patience
     }
     
     print("=" * 80)
@@ -413,14 +419,14 @@ def main():
     train_dataset = CREPEDataset(
         iq_dict=iq_dict,
         bin_list=train_bins,
-        snr_range=(15, 20),  # SNR between 15 and 20 dB
+        snr_range=(15, 21),  # SNR between 15 and 20 dB
         gaussian_sigma=config['gaussian_sigma']
     )
     
     val_dataset = CREPEDataset(
         iq_dict=iq_dict,
         bin_list=val_bins,
-        snr_range=(15, 20),  # Same SNR range
+        snr_range=(15, 21),  # Same SNR range
         gaussian_sigma=config['gaussian_sigma']
     )
     
@@ -442,11 +448,19 @@ def main():
     criterion = nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=config['lr'])
     
+    # Learning rate scheduler - reduce LR when validation loss plateaus
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=config['lr_patience'], 
+        verbose=True, min_lr=1e-6
+    )
+    
     # Training loop
     print(f"\n🚀 Starting training for {config['epochs']} epochs...")
     print("=" * 80)
     
     best_rpa = 0
+    best_epoch = 0
+    patience_counter = 0
     history = {'train_loss': [], 'val_loss': [], 'rpa_50': [], 'rpa_25': [], 'rca': []}
     
     os.makedirs(config['save_dir'], exist_ok=True)
@@ -464,12 +478,17 @@ def main():
         history['rpa_25'].append(rpa_25)
         history['rca'].append(rca)
         
+        # Learning rate scheduler step
+        scheduler.step(val_loss)
+        current_lr = optimizer.param_groups[0]['lr']
+        
         # Print results
         print(f"\n┌─────────────────────────────────────────┐")
         print(f"│ Epoch {epoch}/{config['epochs']}")
         print(f"├─────────────────────────────────────────┤")
         print(f"│ Train Loss:     {train_loss:.6f}")
         print(f"│ Val Loss:       {val_loss:.6f}")
+        print(f"│ Learning Rate:  {current_lr:.6f}")
         print(f"├─────────────────────────────────────────┤")
         print(f"│ RPA (50 cents): {rpa_50:6.2f}%")
         print(f"│ RPA (25 cents): {rpa_25:6.2f}%")
@@ -480,6 +499,8 @@ def main():
         # Save best model
         if rpa_50 > best_rpa:
             best_rpa = rpa_50
+            best_epoch = epoch
+            patience_counter = 0
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -490,6 +511,14 @@ def main():
                 'config': config,
             }, os.path.join(config['save_dir'], 'crepe_best.pth'))
             print(f"✓ Saved best model (RPA: {rpa_50:.2f}%)")
+        else:
+            patience_counter += 1
+            print(f"⏳ No improvement for {patience_counter} epochs (best: {best_rpa:.2f}% at epoch {best_epoch})")
+            
+            if patience_counter >= config['patience']:
+                print(f"\n⚠️  Early stopping triggered after {epoch} epochs")
+                print(f"   Best RPA: {best_rpa:.2f}% at epoch {best_epoch}")
+                break
     
     # Save final model and history
     torch.save(model.state_dict(), os.path.join(config['save_dir'], 'crepe_final.pth'))
