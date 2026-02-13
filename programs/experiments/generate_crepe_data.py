@@ -379,19 +379,19 @@ if __name__ == "__main__":
     bins_to_generate = list(range(0, 360))  # Every other bin
     
     # Duty cycle (same as DiracCombPlots.py default)
-    duty_cycle = 0.1
+    duty_cycle = 0.5
     
     iq_dict = generate_crepe_dataset_dense(
         output_path=OUTPUT_PATH,
         bins_to_generate=bins_to_generate,  # 360 bins
         snr_list=list(range(15, 21)),  # SNR range: 15 to 20 dB
-        samples_per_bin_snr=10,  # 10 augmentations per (bin, SNR)
+        samples_per_bin_snr=161,  # 10 augmentations per (bin, SNR)
         duty_cycle=duty_cycle,
         seed=42
     )
     
     # Total: 180 bins × 6 SNRs × 10 augmentations = 10,800 samples
-    
+    # 360 * 6 * 161 = 348,960 samples for full coverage( almost crepe paper size)
     visualize_dataset(iq_dict, n_samples=6)
     
     print("\n" + "=" * 80)
