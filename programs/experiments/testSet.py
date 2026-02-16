@@ -11,6 +11,7 @@ import pickle
 import os
 from typing import Tuple, List, Dict
 from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 
 # =============================================================================
@@ -45,6 +46,90 @@ def hz_to_crepe_bin(freq_hz: float) -> int:
     cents = hz_to_cents(freq_hz)
     bin_idx = int(round((cents - CENTS_OFFSET) / CREPE_CENTS_PER_BIN))
     return np.clip(bin_idx, 0, CREPE_N_BINS - 1)
+
+
+# =============================================================================
+# PSD Analysis Functions
+# =============================================================================
+
+def compute_psd(signal: np.ndarray, fs: int = CREPE_FS) -> Tuple[np.ndarray, np.ndarray]:
+    """Compute Power Spectral Density using FFT."""
+    if np.iscomplexobj(signal):
+        signal_real = np.abs(signal)
+    else:
+        signal_real = signal
+    
+    n = len(signal_real)
+    fft_vals = np.fft.rfft(signal_real)
+    psd = np.abs(fft_vals) ** 2 / n
+    freqs = np.fft.rfftfreq(n, 1/fs)
+    
+    return freqs, psd
+
+
+def analyze_bin_psd(iq_dict: dict, bin_idx: int, snr: int = 20, max_samples: int = 5) -> dict:
+    """Analyze PSD for a specific bin."""
+    matching_keys = [k for k in iq_dict.keys() 
+                     if f"BIN_{bin_idx:03d}_SNR_{snr:+03d}" in k]
+    
+    if not matching_keys:
+        return None
+    
+    keys_to_analyze = matching_keys[:max_samples]
+    
+    all_psds = []
+    for key in keys_to_analyze:
+        signal = iq_dict[key]
+        freqs, psd = compute_psd(signal)
+        all_psds.append(psd)
+    
+    avg_psd = np.mean(all_psds, axis=0)
+    peak_idx = np.argmax(avg_psd[1:]) + 1
+    peak_freq = freqs[peak_idx]
+    peak_power = 10 * np.log10(avg_psd[peak_idx] + 1e-10)
+    expected_freq = crepe_bin_to_hz(bin_idx)
+    
+    return {
+        'bin_idx': bin_idx,
+        'expected_freq': expected_freq,
+        'peak_freq': peak_freq,
+        'peak_power_db': peak_power,
+        'freqs': freqs,
+        'avg_psd': avg_psd,
+    }
+
+
+def plot_psd_by_bin(iq_dict: dict, all_bins: list, save_dir: str):
+    """Generate PSD plots for selected bins."""
+    n_plots = min(6, len(all_bins))
+    plot_bins = [all_bins[i * len(all_bins) // n_plots] for i in range(n_plots)]
+    
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    axes = axes.flatten()
+    
+    for i, bin_idx in enumerate(plot_bins):
+        result = analyze_bin_psd(iq_dict, bin_idx, snr=20)
+        if result:
+            ax = axes[i]
+            psd_db = 10 * np.log10(result['avg_psd'] + 1e-10)
+            ax.plot(result['freqs'], psd_db, linewidth=0.8)
+            ax.axvline(x=result['expected_freq'], color='r', linestyle='--', 
+                      label=f'Expected: {result["expected_freq"]:.1f} Hz')
+            for h in range(2, 5):
+                harm_freq = result['expected_freq'] * h
+                if harm_freq < CREPE_FS / 2:
+                    ax.axvline(x=harm_freq, color='orange', linestyle=':', alpha=0.5)
+            ax.set_xlabel('Frequency (Hz)')
+            ax.set_ylabel('PSD (dB)')
+            ax.set_title(f'Bin {bin_idx}: F = {result["expected_freq"]:.1f} Hz')
+            ax.set_xlim([0, min(2000, CREPE_FS/2)])
+            ax.legend(fontsize=8)
+            ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, 'psd_by_bin.png'), dpi=150)
+    plt.close()
+    print(f"✓ Saved PSD plots to {save_dir}/psd_by_bin.png")
 
 
 # =============================================================================
@@ -240,7 +325,11 @@ def evaluate_test_set(config, test_dataset, device='cuda'):
     print(f"\n🔄 Loading best model from {best_model_path}...")
     
     # FIX THE UNPICKLING ERROR
-    torch.serialization.add_safe_globals([np.core.multiarray.scalar])
+    try:
+        torch.serialization.add_safe_globals([np.core.multiarray.scalar])
+    except AttributeError:
+        # add_safe_globals not available in this PyTorch version
+        pass
     
     checkpoint = torch.load(best_model_path, weights_only=False, map_location=device)
     
@@ -355,6 +444,48 @@ if __name__ == "__main__":
     
     # Evaluate
     results = evaluate_test_set(config, test_dataset, device=config['device'])
+    
+    # ==========================================================================
+    # PSD Analysis
+    # ==========================================================================
+    print("\n" + "=" * 80)
+    print("📊 PSD ANALYSIS BY BIN")
+    print("=" * 80)
+    
+    print(f"\n{'Bin':<6} {'Expected F (Hz)':<16} {'Peak F (Hz)':<14} {'Peak Power (dB)':<16} {'Error (Hz)':<12}")
+    print("-" * 70)
+    
+    for bin_idx in all_bins[::5]:  # Every 5th bin
+        psd_result = analyze_bin_psd(iq_dict, bin_idx, snr=20)
+        if psd_result:
+            freq_error = abs(psd_result['peak_freq'] - psd_result['expected_freq'])
+            print(f"{bin_idx:<6} {psd_result['expected_freq']:<16.2f} {psd_result['peak_freq']:<14.2f} "
+                  f"{psd_result['peak_power_db']:<16.2f} {freq_error:<12.2f}")
+    
+    # Generate PSD plots
+    #plot_psd_by_bin(iq_dict, all_bins, config['save_dir'])
+    
+    # ==========================================================================
+    # Per-Bin Accuracy
+    # ==========================================================================
+    print("\n" + "=" * 80)
+    print("📊 PER-BIN TEST ACCURACY")
+    print("=" * 80)
+    
+    print(f"\n{'Bin':<6} {'Freq (Hz)':<12} {'RPA 50c (%)':<12}")
+    print("-" * 35)
+    
+    all_preds = results['predictions']
+    all_targets = results['targets']
+    
+    for bin_idx in sorted(set(all_targets)):
+        mask = all_targets == bin_idx
+        if mask.sum() > 0:
+            bin_preds = all_preds[mask]
+            bin_targets = all_targets[mask]
+            bin_rpa, _, _, _ = evaluate_predictions(bin_preds, bin_targets)
+            freq = crepe_bin_to_hz(bin_idx)
+            print(f"{bin_idx:<6} {freq:<12.1f} {bin_rpa:<12.1f}")
     
     # Save results
     results_path = os.path.join(config['save_dir'], 'test_results_standalone.pkl')
