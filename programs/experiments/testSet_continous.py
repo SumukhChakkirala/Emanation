@@ -70,7 +70,7 @@ def compute_psd(signal: np.ndarray, fs: int = CREPE_FS) -> Tuple[np.ndarray, np.
 def analyze_bin_psd(iq_dict: dict, bin_idx: int, snr: int = 20, max_samples: int = 5) -> dict:
     """Analyze PSD for a specific bin."""
     matching_keys = [k for k in iq_dict.keys() 
-                     if f"BIN_{bin_idx:03d}_SNR_{snr:+03d}" in k]
+                     if parse_key(k)[0] == bin_idx and parse_key(k)[1] == snr]
     
     if not matching_keys:
         return None
@@ -136,6 +136,22 @@ def plot_psd_by_bin(iq_dict: dict, all_bins: list, save_dir: str):
 # Dataset
 # =============================================================================
 
+def parse_key(key: str) -> Tuple[int, int, int]:
+    """Parse key to extract bin_idx, snr, and f_h (if available)."""
+    parts = key.split('_')
+    if key.startswith('FH_'):
+        # New format: FH_XXXX_BIN_XXX_SNR_XX_AUG_XX
+        f_h = int(parts[1])
+        bin_idx = int(parts[3])
+        snr = int(parts[5])
+    else:
+        # Old format: BIN_XXX_SNR_YY_AUG_ZZ
+        f_h = None
+        bin_idx = int(parts[1])
+        snr = int(parts[3])
+    return bin_idx, snr, f_h
+
+
 class CREPEDataset(Dataset):
     """CREPE dataset for RF signals."""
     
@@ -155,9 +171,7 @@ class CREPEDataset(Dataset):
         self.labels = []
         
         for key, signal in iq_dict.items():
-            parts = key.split('_')
-            bin_idx = int(parts[1])
-            snr = int(parts[3])
+            bin_idx, snr, _ = parse_key(key)
             
             if bin_list is not None and bin_idx not in bin_list:
                 continue
@@ -429,7 +443,7 @@ if __name__ == "__main__":
     print(f"✓ Loaded {len(iq_dict)} samples")
     
     # Get test bins (same split as training)
-    all_bins = sorted(list(set([int(k.split('_')[1]) for k in iq_dict.keys()])))
+    all_bins = sorted(list(set([parse_key(k)[0] for k in iq_dict.keys()])))
     test_bins = [b for i, b in enumerate(all_bins) if i % 5 == 1]  # 20% test
     
     print(f"✓ Test bins: {len(test_bins)}")
