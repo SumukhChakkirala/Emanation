@@ -463,7 +463,7 @@ if __name__ == "__main__":
                   f"{psd_result['peak_power_db']:<16.2f} {freq_error:<12.2f}")
     
     # Generate PSD plots
-    #plot_psd_by_bin(iq_dict, all_bins, config['save_dir'])
+    plot_psd_by_bin(iq_dict, all_bins, config['save_dir'])
     
     # ==========================================================================
     # Per-Bin Accuracy
