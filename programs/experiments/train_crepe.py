@@ -16,6 +16,7 @@ from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import pickle
 import os
+import argparse
 from typing import Tuple, List, Dict
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -104,7 +105,7 @@ class CREPEDataset(Dataset):
             
             # Filter by SNR
             if snr_range is not None:
-                if snr < snr_range[0] or snr > snr_range[1]:
+                if snr < snr_range[0] or snr >= snr_range[1]:
                     continue
             
             self.samples.append((key, signal))
@@ -370,19 +371,29 @@ def train_epoch(model, dataloader, criterion, optimizer, device, epoch):
 
 
 def main():
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Train CREPE model with configurable SNR range')
+    parser.add_argument('--snr_min', type=int, default=0, help='Minimum SNR (default: 0)')
+    parser.add_argument('--snr_max', type=int, default=20, help='Maximum SNR (default: 20)')
+    parser.add_argument('--model_suffix', type=str, default='snr_0_20', help='Suffix for model files')
+    args = parser.parse_args()
+    
     # Configuration block 
     config = {
         'data_path': './IQData/iq_dict_crepe_dirac_comb.pkl',
-        'batch_size': 32,  # Increased from 32 for more stable gradients
+        'batch_size': 64,  # Increased from 32 for more stable gradients
         'epochs': 30,  # More epochs with early stopping
-        'lr': 0.0002,  
+        'lr': 0.0001,  
         # 'capacity' removed - using standard CREPE architecture
-        'dropout': 0.25,  # As per paper
+        'weight_decay': 1e-4,
+        'dropout': 0.35,  # As per paper
         'gaussian_sigma': 1.25,  # 25 cents / 20 cents per bin
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
         'save_dir': './models_crepe/',
         'patience': 5,  # Early stopping patience
-        'lr_patience': 3,  # LR scheduler patience
+        'lr_patience': 2,  # LR scheduler patience
+        'snr_range': (args.snr_min, args.snr_max + 1),  # +1 because range is exclusive on upper bound
+        'model_suffix': args.model_suffix,
     }
     
     print("=" * 80)
@@ -414,19 +425,20 @@ def main():
     print(f"  Test bins: {len(test_bins)} (20%)")
     print(f"  Overlap: All splits are interspersed for full frequency coverage")
     
-    # Create datasets - use SNR range 15-20 dB
+    # Create datasets - use configured SNR range
+    print(f"\n📊 Using SNR range: {config['snr_range'][0]} to {config['snr_range'][1] - 1} dB")
     # Dataset objects
     train_dataset = CREPEDataset(
         iq_dict=iq_dict,
         bin_list=train_bins,
-        snr_range=(15, 21),  # SNR between 15 and 20 dB
+        snr_range=config['snr_range'],  # Use configured SNR range
         gaussian_sigma=config['gaussian_sigma']
     )
     
     val_dataset = CREPEDataset(
         iq_dict=iq_dict,
         bin_list=val_bins,
-        snr_range=(15, 21),  # Same SNR range
+        snr_range=config['snr_range'],  # Same SNR range
         gaussian_sigma=config['gaussian_sigma']
     )
     
@@ -509,7 +521,7 @@ def main():
                 'rpa_25': rpa_25,
                 'rca': rca,
                 'config': config,
-            }, os.path.join(config['save_dir'], 'crepe_best.pth'))
+            }, os.path.join(config['save_dir'], f"crepe_best_{config['model_suffix']}.pth"))
             print(f"✓ Saved best model (RPA: {rpa_50:.2f}%)")
         else:
             patience_counter += 1
@@ -521,8 +533,8 @@ def main():
                 break
     
     # Save final model and history
-    torch.save(model.state_dict(), os.path.join(config['save_dir'], 'crepe_final.pth'))
-    with open(os.path.join(config['save_dir'], 'training_history.pkl'), 'wb') as f:
+    torch.save(model.state_dict(), os.path.join(config['save_dir'], f"crepe_final_{config['model_suffix']}.pth"))
+    with open(os.path.join(config['save_dir'], f"training_history_{config['model_suffix']}.pkl"), 'wb') as f:
         pickle.dump(history, f)
     
     # Plot training curves
@@ -557,7 +569,7 @@ def main():
     axes[1, 1].axis('off')
     
     plt.tight_layout()
-    plt.savefig(os.path.join(config['save_dir'], 'training_curves.png'), dpi=150)
+    plt.savefig(os.path.join(config['save_dir'], f"training_curves_{config['model_suffix']}.png"), dpi=150)
     plt.close()
     
     print("\n" + "=" * 80)
