@@ -380,18 +380,18 @@ def main():
     
     # Configuration block 
     config = {
-        'data_path': './IQData/iq_dict_crepe_dirac_comb.pkl',
+        'data_path': os.path.join(os.path.dirname(__file__), 'IQData', 'iq_dict_crepe_dirac_comb_SNRneg20_20.pkl'),
         'batch_size': 64,  # Increased from 32 for more stable gradients
-        'epochs': 30,  # More epochs with early stopping
+        'epochs': 50,  # More epochs with early stopping
         'lr': 0.0001,  
         # 'capacity' removed - using standard CREPE architecture
         'weight_decay': 1e-4,
         'dropout': 0.35,  # As per paper
         'gaussian_sigma': 1.25,  # 25 cents / 20 cents per bin
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-        'save_dir': './models_crepe/',
-        'patience': 5,  # Early stopping patience
-        'lr_patience': 2,  # LR scheduler patience
+        'save_dir': os.path.join(os.path.dirname(__file__), 'models'),
+        'patience': 7,  # Early stopping patience
+        'lr_patience': 3,  # LR scheduler patience
         'snr_range': (args.snr_min, args.snr_max + 1),  # +1 because range is exclusive on upper bound
         'model_suffix': args.model_suffix,
     }

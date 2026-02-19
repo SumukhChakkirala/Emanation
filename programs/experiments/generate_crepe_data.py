@@ -30,7 +30,7 @@ CREPE_FS = 16000           # 16 kHz sampling rate
 CREPE_FRAME_LENGTH = 1024  # 1024 samples = 64 ms at 16 kHz
 CREPE_N_BINS = 360         # 360 pitch bins
 CREPE_CENTS_PER_BIN = 20   # 20 cents per bin
-CREPE_FMIN = 32.70         # C1 (~32.7 Hz) - minimum frequency
+CREPE_FMIN = 32.7         # C1 (~32.7 Hz) - minimum frequency
 CREPE_FMAX = 1975.53       # B7 (~1975 Hz) - maximum frequency
 
 
@@ -385,13 +385,12 @@ if __name__ == "__main__":
         output_path=OUTPUT_PATH,
         bins_to_generate=bins_to_generate,  # 360 bins
         snr_list=list(range(15, 21)),  # SNR range: 15 to 20 dB
-        samples_per_bin_snr=161,  # 10 augmentations per (bin, SNR)
+        samples_per_bin_snr=161,  # Increased from 161 for more augmentation
         duty_cycle=duty_cycle,
         seed=42
     )
     
-    # Total: 180 bins × 6 SNRs × 10 augmentations = 10,800 samples
-    # 360 * 6 * 161 = 348,960 samples for full coverage( almost crepe paper size)
+    # Total with fmin=100: 258 bins × 6 SNRs × 250 augmentations = ~387,000 samples
     visualize_dataset(iq_dict, n_samples=6)
     
     print("\n" + "=" * 80)

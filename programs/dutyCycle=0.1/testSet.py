@@ -9,6 +9,7 @@ from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import pickle
 import os
+import argparse
 from typing import Tuple, List, Dict
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -320,7 +321,7 @@ def evaluate_predictions(predictions: np.ndarray, targets: np.ndarray) -> Tuple[
 def evaluate_test_set(config, test_dataset, device='cuda'):
     """Evaluate the best model on the test set."""
     
-    best_model_path = os.path.join(config['save_dir'], 'crepe_best.pth')
+    best_model_path = os.path.join(config['save_dir'], f"crepe_best_{config['model_suffix']}.pth")
     
     print(f"\n🔄 Loading best model from {best_model_path}...")
     
@@ -409,13 +410,23 @@ if __name__ == "__main__":
     print("CREPE Model - Test Set Evaluation")
     print("=" * 80)
     
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description='Test CREPE model on test set')
+    parser.add_argument('--snr_min', type=int, default=0, help='Minimum SNR for test set (default: 0)')
+    parser.add_argument('--snr_max', type=int, default=20, help='Maximum SNR for test set (default: 20)')
+    parser.add_argument('--model_suffix', type=str, default='snr_0_20', help='Model suffix (e.g., snr_0_20, snr_neg20_20)')
+    args = parser.parse_args()
+    
     config = {
-        'data_path': './IQData/iq_dict_continuous_freq.pkl',
+        'data_path': './IQData/iq_dict_crepe_dirac_comb_SNRneg20_20.pkl',
         'batch_size': 32,
         'dropout': 0.25,
         'gaussian_sigma': 1.25,
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
         'save_dir': './models_crepe/',
+        'snr_min': args.snr_min,
+        'snr_max': args.snr_max,
+        'model_suffix': args.model_suffix,
     }
     
     print(f"\nConfiguration:")
@@ -438,7 +449,7 @@ if __name__ == "__main__":
     test_dataset = CREPEDataset(
         iq_dict=iq_dict,
         bin_list=test_bins,
-        snr_range=(15, 21),
+        snr_range=(config['snr_min'], config['snr_max'] + 1),  # +1 because range is exclusive on upper bound
         gaussian_sigma=config['gaussian_sigma']
     )
     
@@ -488,11 +499,50 @@ if __name__ == "__main__":
             print(f"{bin_idx:<6} {freq:<12.1f} {bin_rpa:<12.1f}")
     
     # Save results
-    results_path = os.path.join(config['save_dir'], 'test_results_standalone.pkl')
+    results_path = os.path.join(config['save_dir'], f"test_results_{config['model_suffix']}.pkl")
     with open(results_path, 'wb') as f:
         pickle.dump(results, f)
     
     print(f"\n💾 Results saved to: {results_path}")
+
+    # =============================
+    # Plot: Bin Index vs Predicted Frequency (with true freq overlay)
+    # =============================
+    print("\nGenerating plot: Bin Index vs Predicted Frequency (with true freq overlay)...")
+    all_preds = results['predictions']
+    all_targets = results['targets']
+    bin_indices = np.arange(360)
+    pred_probs = 1 / (1 + np.exp(-all_preds))
+    pred_bins = np.sum(pred_probs * bin_indices, axis=1) / np.sum(pred_probs, axis=1)
+    pred_freqs = np.array([crepe_bin_to_hz(b) for b in pred_bins])
+    # True freq for each bin index
+    true_freqs_per_bin = np.array([crepe_bin_to_hz(b) for b in bin_indices])
+
+    # Scatter: all predictions (blue dots)
+    plt.figure(figsize=(12, 7))
+    plt.scatter(all_targets, pred_freqs, s=8, alpha=0.3, color='royalblue', label='Predicted Freq (all samples)')
+    # Overlay: true freq vs bin index (black line)
+    plt.plot(bin_indices, true_freqs_per_bin, color='black', lw=2, label='True Freq (bin center)')
+    # Overlay: mean predicted freq per bin (thick red dot)
+    mean_pred_freq_per_bin = []
+    for b in bin_indices:
+        mask = all_targets == b
+        if np.any(mask):
+            mean_pred_freq_per_bin.append(pred_freqs[mask].mean())
+        else:
+            mean_pred_freq_per_bin.append(np.nan)
+    plt.scatter(bin_indices, mean_pred_freq_per_bin, color='red', s=100, label='Mean Predicted Freq', zorder=5)
+    plt.xlabel('Bin Index')
+    plt.ylabel('Frequency (Hz)')
+    plt.title(f"Bin Index vs Predicted Frequency ({config['model_suffix']})")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plot_path = os.path.join(config['save_dir'], f"bin_vs_predicted_freq_{config['model_suffix']}.png")
+    plt.savefig(plot_path, dpi=150)
+    plt.close()
+    print(f"✓ Bin vs Predicted Frequency plot saved to: {plot_path}")
+
     print("\n" + "="*80)
     print("✓ Test evaluation complete!")
     print("="*80)
