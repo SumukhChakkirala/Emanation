@@ -393,7 +393,7 @@ def main():
     
     # Configuration
     config = {
-        'data_path': r'IQData\iq_dict_continuous_freq_SNR0_20_continous.pkl',
+        'data_path': r'IQData\iq_dict_continuous_freq_SNR0_20_logarithmic.pkl',
         'batch_size': args.batch_size,
         'epochs': args.epochs,
         'lr': args.lr,
@@ -651,7 +651,7 @@ def main():
             break
     
     # Save final model
-    torch.save(model.state_dict(), os.path.join(config['save_dir'], f"crepe_final_{config['model_suffix']}.pth"))
+    torch.save(model.state_dict(), os.path.join(config['save_dir'], f"crepe_final_log_{config['model_suffix']}.pth"))
     with open(os.path.join(config['save_dir'], f"training_history_{config['model_suffix']}.pkl"), 'wb') as f:
         pickle.dump(history, f)
     

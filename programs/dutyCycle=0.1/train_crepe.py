@@ -380,7 +380,7 @@ def main():
     
     # Configuration block 
     config = {
-        'data_path': os.path.join(os.path.dirname(__file__), 'IQData', 'iq_dict_crepe_dirac_comb_SNRneg20_20.pkl'),
+        'data_path':  './IQData/iq_dict_continuous_freq_SNR0_20.pkl',
         'batch_size': 64,  # Increased from 32 for more stable gradients
         'epochs': 50,  # More epochs with early stopping
         'lr': 0.0001,  
