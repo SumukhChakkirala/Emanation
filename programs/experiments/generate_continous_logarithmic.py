@@ -30,7 +30,7 @@ from generate_crepe_data import (
 def generate_random_fh(f_min: float, f_max: float, seed: int) -> float:
     """
     Generate a random f_h value between f_min and f_max with 1 decimal place.
-    Uniformly distributed across the frequency range.
+    Log-uniformly distributed across the frequency range.
     
     Args:
         f_min: Minimum frequency in Hz
@@ -41,8 +41,10 @@ def generate_random_fh(f_min: float, f_max: float, seed: int) -> float:
         f_h: Random frequency rounded to 1 decimal place
     """
     np.random.seed(seed)
-    f_h = np.random.uniform(f_min, f_max)
-    # Round to 1 decimal place
+    log_f_min = np.log2(f_min)
+    log_f_max = np.log2(f_max)
+    log_f_h = np.random.uniform(log_f_min, log_f_max)
+    f_h = 2 ** log_f_h
     f_h = round(f_h, 1)
     return f_h
 
@@ -58,7 +60,7 @@ def generate_continuous_dataset(
 ) -> dict:
     """
     Generate dataset with truly continuous (random) f_h values.
-    Frequencies are uniformly distributed between f_min and f_max.
+    Frequencies are LOG-UNIFORMLY distributed between f_min and f_max (base 2).
     
     Args:
         output_path: Path to save the pickle file
@@ -79,13 +81,13 @@ def generate_continuous_dataset(
     total_samples = n_input_frames * n_snr
     
     print("=" * 70)
-    print("Generating TRULY Continuous Frequency Dataset")
+    print("Generating TRULY Continuous Frequency Dataset (Log-Uniform)")
     print("=" * 70)
     print(f"\nParameters:")
     print(f"  Sampling rate: {CREPE_FS} Hz")
     print(f"  Frame length: {CREPE_FRAME_LENGTH} samples")
     print(f"  F_h range: {f_min} Hz to {f_max} Hz (continuous, 1 decimal place)")
-    print(f"  Distribution: Uniform")
+    print(f"  Distribution: Log-Uniform (base 2)")
     print(f"  SNR values: {snr_list} ({n_snr} levels)")
     print(f"  Input frames: {n_input_frames:,}")
     print(f"  Duty cycle: {duty_cycle*100:.0f}%")
@@ -158,7 +160,7 @@ def generate_continuous_dataset(
 
 if __name__ == "__main__":
     OUTPUT_DIR = './IQData/'
-    OUTPUT_FILE = 'iq_dict_continuous_freq_SNR0_20.pkl'
+    OUTPUT_FILE = 'iq_dict_continuous_freq_SNR0_20_logarithmic.pkl'
     
     # Configuration
     config = {
