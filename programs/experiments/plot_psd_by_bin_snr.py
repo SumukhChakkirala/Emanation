@@ -28,7 +28,7 @@ def plot_psd_comparison(iq_dict, bin_idx, aug_idx, snr_list, output_path=None):
             w_energy = (np.real(np.vdot(w, w))) / len(w)
             iq_w = np.multiply(signal, w)
             fft_iq = np.fft.fftshift(np.abs(np.fft.fft(iq_w)))
-            psd_val = np.multiply(fft_iq, fft_iq) / (w_energy * len(w))
+            psd_val = np.multiply(fft_iq, fft_iq) / (w_energy * len(w)*CREPE_FS)
             psd = 10 * np.log10(psd_val + 1e-20)
 
             freqs = np.fft.fftshift(np.fft.fftfreq(len(signal), 1/CREPE_FS))
@@ -46,11 +46,13 @@ def plot_psd_comparison(iq_dict, bin_idx, aug_idx, snr_list, output_path=None):
                 ax.text(harmonic + 20, ax.get_ylim()[1] - 8, f'F₀={F_h:.1f} Hz', 
                        rotation=0, va='top', fontsize=10, color='red', fontweight='bold')
     
+    xaxis = min(CREPE_FS/2, F_h*10)
+    
     ax.set_title(f'PSD Comparison Across SNR Levels\nBin {bin_idx} (F₀ = {F_h:.2f} Hz) | Aug {aug_idx}', 
                 fontsize=14, fontweight='bold')
     ax.set_xlabel('Frequency (Hz)', fontsize=12)
     ax.set_ylabel('Power Spectral Density (dB)', fontsize=12)
-    ax.set_xlim([0, CREPE_FS/2])
+    ax.set_xlim([0, xaxis])
     ax.grid(True, alpha=0.3, linestyle=':', linewidth=0.8)
     ax.legend(loc='upper right', fontsize=10, framealpha=0.9)
     plt.tight_layout()
@@ -64,17 +66,17 @@ def plot_psd_comparison(iq_dict, bin_idx, aug_idx, snr_list, output_path=None):
 
 if __name__ == '__main__':
     # Load dataset
-    dataset_path = './IQData/iq_dict_crepe_dirac_comb.pkl'
-    if not os.path.exists(dataset_path):
-        dataset_path = '../../IQData/iq_dict_crepe_dirac_comb.pkl'
+    dataset_path = r'programs\dutyCycle=0.1\IQData\iq_dict_crepe_dirac_comb_SNR0_20.pkl'
+    #if not os.path.exists(dataset_path):
+        #dataset_path = '../../IQData/iq_dict_crepe_dirac_comb.pkl'
     
     with open(dataset_path, 'rb') as f:
         iq_dict = pickle.load(f)
     
     # Plot configuration
-    plot_psd_comparison(iq_dict, bin_idx=180, aug_idx=0, 
-                       snr_list=[20, 19, 18, 17, 16, 15],
-                       output_path='psd_comparison_bin180_aug0.png')
+    plot_psd_comparison(iq_dict, bin_idx=234, aug_idx=0, 
+                       snr_list=[-20, -10, -5, 0, 5, 10,20],
+                       output_path='psd_comparison_bin234_aug0.png')
 
 #example
 
