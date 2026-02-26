@@ -31,7 +31,7 @@ CREPE_FRAME_LENGTH = 1024  # 1024 samples = 64 ms at 16 kHz
 CREPE_N_BINS = 360         # 360 pitch bins
 CREPE_CENTS_PER_BIN = 20   # 20 cents per bin
 CREPE_FMIN = 32.7         # C1 (~32.7 Hz) - minimum frequency
-CREPE_FMAX = 1975.53       # B7 (~1975 Hz) - maximum frequency
+CREPE_FMAX = 2069.0        # Bin 359 max (~2068.76 Hz + margin for float precision)
 
 
 def hz_to_cents(freq_hz: float, fref: float = 10.0) -> float:
@@ -48,14 +48,14 @@ def hz_to_crepe_bin(freq_hz: float) -> int:
     """Convert frequency in Hz to CREPE bin index (0-359)."""
     cents = hz_to_cents(freq_hz)
     # CREPE bin 0 corresponds to ~32.7 Hz (C1)
-    CENTS_OFFSET = 1997.3794084376191
+    CENTS_OFFSET = 2051.148763
     bin_idx = int(round((cents - CENTS_OFFSET) / CREPE_CENTS_PER_BIN))
     return np.clip(bin_idx, 0, CREPE_N_BINS - 1)
 
 
 def crepe_bin_to_hz(bin_idx: int) -> float:
     """Convert CREPE bin index to frequency in Hz."""
-    CENTS_OFFSET = 1997.3794084376191
+    CENTS_OFFSET = 2051.148763
     cents = CENTS_OFFSET + bin_idx * CREPE_CENTS_PER_BIN
     return cents_to_hz(cents)
 
@@ -158,7 +158,7 @@ def generate_harmonic_rf_signal(
     return generate_dirac_comb_signal(F_h, Fs, duration, duty_cycle)
 
 
-def add_complex_noise(signal: np.ndarray, snr_db: float, seed: int = None) -> np.ndarray:
+def add_complex_noise(signal: np.ndarray, snr_db: float, rng: np.random.Generator) -> np.ndarray:
     """
     Add complex Gaussian noise to achieve specified SNR.
     
@@ -170,27 +170,20 @@ def add_complex_noise(signal: np.ndarray, snr_db: float, seed: int = None) -> np
     Args:
         signal: Input signal (real or complex)
         snr_db: Target SNR in dB
-        seed: Random seed for reproducibility
+        rng: NumPy random Generator for noise generation
     
     Returns:
         noisy_signal: Signal with complex AWGN added
     """
-    if seed is not None:
-        np.random.seed(seed)
-    
     # Signal variance (following DiracCombPlots approach)
     var_y = np.var(np.real(signal))
     
     # Noise variance for target SNR: var_s = 0.5 * (var_y / 10^(SNR/10))
     var_s = 0.5 * (var_y / (10 ** (snr_db / 10)))
     
-    # Generate complex Gaussian noise (I + jQ)
-    if seed is not None:
-        np.random.seed(seed)
-    w_s_I = np.random.normal(loc=0, scale=np.sqrt(var_s), size=len(signal))
-    if seed is not None:
-        np.random.seed(seed + 1)
-    w_s_Q = np.random.normal(loc=0, scale=np.sqrt(var_s), size=len(signal))
+    # Generate complex Gaussian noise (I + jQ) using Generator API
+    w_s_I = rng.normal(loc=0, scale=np.sqrt(var_s), size=len(signal))
+    w_s_Q = rng.normal(loc=0, scale=np.sqrt(var_s), size=len(signal))
     w_s = w_s_I + 1j * w_s_Q
     
     # Add noise to signal (real signal + complex noise -> complex signal)
@@ -227,7 +220,14 @@ def generate_crepe_dataset_dense(
     Returns:
         iq_dict: Dictionary mapping keys to IQ arrays
     """
-    np.random.seed(seed)
+    # np.random.seed(seed)
+    
+    # Single main seed using numpy Generator for reproducible signal parameters
+    main_seed = seed
+    rng = np.random.default_rng(seed=main_seed)
+    
+    # Separate unseeded generator for random noise (different each run)
+    noise_rng = np.random.default_rng()
     
     if snr_list is None:
         # SNR range: 15 to 20 dB (high SNR for cleaner signals)
@@ -265,7 +265,7 @@ def generate_crepe_dataset_dense(
         for snr in snr_list:
             for aug_idx in range(samples_per_bin_snr):
                 # Vary duty cycle slightly for augmentation
-                dc = duty_cycle * np.random.uniform(0.8, 1.2)
+                dc = duty_cycle * rng.uniform(0.8, 1.2)
                 dc = np.clip(dc, 0.05, 0.5)  # Keep duty cycle reasonable
                 
                 # Generate clean pulse train signal using Dirac comb approach
@@ -274,9 +274,8 @@ def generate_crepe_dataset_dense(
                     duty_cycle=dc
                 )
                 
-                # Add noise with deterministic seed for reproducibility
-                noise_seed = bin_idx * 100000 + snr * 1000 + aug_idx
-                noisy_signal = add_complex_noise(clean_signal, snr, seed=noise_seed)
+                # Add noise using unseeded noise generator
+                noisy_signal = add_complex_noise(clean_signal, snr, noise_rng)
                 
                 # Key format: "BIN_XXX_SNR_YY_AUG_ZZ"
                 key = f"BIN_{bin_idx:03d}_SNR_{snr:+03d}_AUG_{aug_idx:03d}"
@@ -366,7 +365,7 @@ def visualize_dataset(iq_dict: dict, n_samples: int = 6):
 
 if __name__ == "__main__":
     OUTPUT_DIR = './IQData/'
-    OUTPUT_FILE = 'iq_dict_crepe_dirac_comb.pkl'
+    OUTPUT_FILE = 'iq_dict_crepe_dirac_comb_SNR15_20.pkl'
     OUTPUT_PATH = os.path.join(OUTPUT_DIR, OUTPUT_FILE)
     
     # Strategy: Generate dense coverage using Dirac comb approach
@@ -379,7 +378,7 @@ if __name__ == "__main__":
     bins_to_generate = list(range(0, 360))  # Every other bin
     
     # Duty cycle (same as DiracCombPlots.py default)
-    duty_cycle = 0.5
+    duty_cycle = 0.1
     
     iq_dict = generate_crepe_dataset_dense(
         output_path=OUTPUT_PATH,
@@ -389,6 +388,10 @@ if __name__ == "__main__":
         duty_cycle=duty_cycle,
         seed=42
     )
+    bins = sorted(list(set([int(k.split('_')[1]) for k in iq_dict.keys()])))
+    print(f"Number of unique bins: {len(bins)}")
+    print(f"Bin range: {min(bins)} - {max(bins)}")
+    print(f"Bins: {bins}")
     
     # Total with fmin=100: 258 bins × 6 SNRs × 250 augmentations = ~387,000 samples
     visualize_dataset(iq_dict, n_samples=6)

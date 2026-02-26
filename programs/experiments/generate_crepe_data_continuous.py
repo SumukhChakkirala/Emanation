@@ -17,6 +17,13 @@ import pickle
 import os
 from tqdm import tqdm
 
+# Single main seed for reproducible signal parameters (Fh, duty cycle)
+main_seed = 1234
+rng = np.random.default_rng(seed=main_seed)
+
+# Separate unseeded generator for random noise (different each run)
+noise_rng = np.random.default_rng()
+
 # Import from existing code
 from generate_crepe_data import (
     CREPE_FS,
@@ -27,24 +34,24 @@ from generate_crepe_data import (
 )
 
 
-def generate_random_fh(f_min: float, f_max: float, seed: int) -> float:
-    """
-    Generate a random f_h value between f_min and f_max with 1 decimal place.
-    Uniformly distributed across the frequency range.
-    
-    Args:
-        f_min: Minimum frequency in Hz
-        f_max: Maximum frequency in Hz
-        seed: Random seed for reproducibility
-    
-    Returns:
-        f_h: Random frequency rounded to 1 decimal place
-    """
-    np.random.seed(seed)
-    f_h = np.random.uniform(f_min, f_max)
-    # Round to 1 decimal place
-    f_h = round(f_h, 1)
-    return f_h
+# def generate_random_fh(f_min: float, f_max: float, seed: int) -> float:
+#     """
+#     Generate a random f_h value between f_min and f_max with 1 decimal place.
+#     Uniformly distributed across the frequency range.
+#     
+#     Args:
+#         f_min: Minimum frequency in Hz
+#         f_max: Maximum frequency in Hz
+#         seed: Random seed for reproducibility
+#     
+#     Returns:
+#         f_h: Random frequency rounded to 1 decimal place
+#     """
+#     np.random.seed(seed)
+#     f_h = np.random.uniform(f_min, f_max)
+#     # Round to 1 decimal place
+#     f_h = round(f_h, 1)
+#     return f_h
 
 
 def generate_continuous_dataset(
@@ -53,8 +60,7 @@ def generate_continuous_dataset(
     f_max: float = 1976.0,
     snr_list: list = None,
     n_input_frames: int = 10000,
-    duty_cycle: float = 0.5,
-    base_seed: int = 42
+    duty_cycle: float = 0.5
 ) -> dict:
     """
     Generate dataset with truly continuous (random) f_h values.
@@ -67,7 +73,6 @@ def generate_continuous_dataset(
         snr_list: List of SNR values (default: [0, 1, 2, ..., 20])
         n_input_frames: Number of input frames (each gets a random f_h)
         duty_cycle: Duty cycle for pulse generation
-        base_seed: Base random seed (will be modified with iteration index)
     
     Returns:
         iq_dict: Dictionary mapping keys to IQ arrays
@@ -77,6 +82,10 @@ def generate_continuous_dataset(
     
     n_snr = len(snr_list)
     total_samples = n_input_frames * n_snr
+    
+    # Pre-generate all Fh values upfront using main rng
+    Fh_values = rng.uniform(f_min, f_max, n_input_frames)
+    Fh_values = np.round(Fh_values, 1)  # Round to 1 decimal place
     
     print("=" * 70)
     print("Generating TRULY Continuous Frequency Dataset")
@@ -89,7 +98,7 @@ def generate_continuous_dataset(
     print(f"  SNR values: {snr_list} ({n_snr} levels)")
     print(f"  Input frames: {n_input_frames:,}")
     print(f"  Duty cycle: {duty_cycle*100:.0f}%")
-    print(f"  Base seed: {base_seed}")
+    print(f"  Main seed: {main_seed}")
     print(f"  Total samples: {total_samples:,}")
     print("=" * 70)
     
@@ -97,12 +106,11 @@ def generate_continuous_dataset(
     iq_dict = {}
     sample_count = 0
     
-    # Loop 1: For each input frame (pick random f_h each time)
+    # Loop 1: For each input frame (use pre-generated f_h values)
     for frame_idx in tqdm(range(n_input_frames), desc="Generating frames"):
         
-        # Generate random f_h with seed that changes each iteration
-        fh_seed = base_seed + frame_idx
-        f_h = generate_random_fh(f_min, f_max, fh_seed)
+        # Use pre-generated f_h value
+        f_h = Fh_values[frame_idx]
         
         # Convert to CREPE bin for the label
         bin_idx = hz_to_crepe_bin(f_h)
@@ -117,11 +125,8 @@ def generate_continuous_dataset(
         
         # Loop 2: For each SNR value
         for snr_idx, snr in enumerate(snr_list):
-            # Unique seed for noise (changes with both frame and SNR)
-            noise_seed = base_seed + frame_idx * 1000 + snr_idx
-            
-            # Add noise
-            noisy_signal = add_complex_noise(clean_signal, snr, seed=noise_seed)
+            # Add noise using unseeded noise generator
+            noisy_signal = add_complex_noise(clean_signal, snr, noise_rng)
             
             # Key format: BIN_XXX_SNR_XX_IDX_XXXXX_FH_XXXX.X
             # BIN and SNR are in positions expected by training code
@@ -158,19 +163,18 @@ def generate_continuous_dataset(
 
 if __name__ == "__main__":
     OUTPUT_DIR = './IQData/'
-    OUTPUT_FILE = 'iq_dict_continuous_freq_SNR0_20.pkl'
+    OUTPUT_FILE = 'iq_dict_continuous_freq_SNR0_20(25-2-26).pkl'
     
     # Configuration
     config = {
         'output_path': os.path.join(OUTPUT_DIR, OUTPUT_FILE),
-        'f_min': 32.0,
-        'f_max': 1976.0,
+        'f_min': 32.7,
+        'f_max': 2067.0,
         'snr_list': list(range(0, 21)),  # 21 SNR levels (0 to 20 dB)
-        'n_input_frames': 20000,               # 10,000 random frequencies
-        'duty_cycle': 0.5,
-        'base_seed': 42
+        'n_input_frames': 33333,               # 10,000 random frequencies
+        'duty_cycle': 0.5
     }
-    
+    # Total: 33,333 frames × 21 SNRs = 699,993 samples (rounded to 700k for easier tracking)
     # Total: 10,000 frames × 6 SNRs = 60,000 samples
     
     iq_dict = generate_continuous_dataset(**config)
