@@ -135,3 +135,44 @@ with imageio.get_writer("psd_aug_idx.mp4", fps=1) as writer:
 
 
 
+#### code to unit test the Gaussian aproximation:
+label = np.zeros(CREPE_N_BINS, dtype=np.float32)
+        
+        # Gaussian centered at true_bin with sigma in bins
+
+c_true = 1200*np.log2(fh/CREPE_F_REF)
+c_est = 0
+label_sum = 0
+for i in range(CREPE_N_BINS):
+    c_i = CREPE_CENTS_PER_BIN*(i-1) + CENTS_OFFSET
+    c_est = c_est + c_i*label[i] 
+    label_sum = label_sum + label[i]
+c_est = c_est / (label_sum + 1e-8)
+print("C estimate is: ", c_est, "C_true is", c_true)
+            
+            # label[i] = np.exp(-(c_i-c_true)**2 / (2 * self.gaussian_sigma ** 2))
+            # label[i] = np.exp(-((i - true_bin) ** 2) / (2 * self.gaussian_sigma ** 2))
+        
+        # Normalize (though paper doesn't explicitly do this)
+        # label = label / (label.sum() + 1e-8)
+
+label = np.zeros(CREPE_N_BINS, dtype=np.float64)
+
+# Gaussian centered at true_bin with sigma in bins
+
+label = np.zeros(CREPE_N_BINS, dtype=np.float64)
+        
+        # Gaussian centered at true_bin with sigma in bins
+        
+c_true = 1200*np.log2(fh/CREPE_F_REF)
+for i in range(CREPE_N_BINS):
+    c_i = CREPE_CENTS_PER_BIN*(i-1) + CENTS_OFFSET
+    exp_val = ((c_i-c_true)**2) / (2 * (self.gaussian_sigma ** 2))
+    print(expl_val)
+    label[i] = np.exp(-exp_val)
+    print("Label at bin ", i, " is ", label[i])
+    # label[i] = np.exp(-((i - true_bin) ** 2) / (2 * self.gaussian_sigma ** 2))
+        
+        # Normalize (though paper doesn't explicitly do this)
+        # label = label / (label.sum() + 1e-8)
+        
