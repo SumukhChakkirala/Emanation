@@ -418,29 +418,37 @@ def main():
     # val_bins = [b for i, b in enumerate(all_bins) if i % 5 == 0]              # 20%
     # test_bins = [b for i, b in enumerate(all_bins) if i % 5 == 1]             # 20%
 
+    #input frames
+    print(f"loaded {len(iq_dict)} samples")
+    all_frames = list(iq_dict.keys())
+    print(f"found {len(all_frames)} frames")
+
     # Random train/val/test split using sklearn (40/40/20)
-    train_bins, temp_bins = train_test_split(all_bins, test_size=0.6, random_state=42)  # 40% train, 60% temp
-    val_bins, test_bins = train_test_split(temp_bins, test_size=0.333, random_state=42)   # 40% val, 20% test
+    train_frames, temp_frames = train_test_split(all_frames, test_size=0.6, random_state=42)  # 40% train, 60% temp
+    val_frames, test_frames = train_test_split(temp_frames, test_size=0.333, random_state=42)   # 40% val, 20% test
     
     print(f"\n📊 Train/Val/Test split (Random 40/40/20):")
-    print(f"  Train bins: {len(train_bins)} ({100*len(train_bins)/len(all_bins):.0f}%)")
-    print(f"  Val bins: {len(val_bins)} ({100*len(val_bins)/len(all_bins):.0f}%)")
-    print(f"  Test bins: {len(test_bins)} ({100*len(test_bins)/len(all_bins):.0f}%)")
+    print(f"  Train frames: {len(train_frames)} ({100*len(train_frames)/len(all_frames):.0f}%)")
+    print(f"  Val frames: {len(val_frames)} ({100*len(val_frames)/len(all_frames):.0f}%)")
+    print(f"  Test frames: {len(test_frames)} ({100*len(test_frames)/len(all_frames):.0f}%)")
     print(f"  Random seed: 42")
-    
+
+    train_iq_dict = {k: iq_dict[k] for k in train_frames}
+    val_iq_dict = {k: iq_dict[k] for k in val_frames}
+    test_iq_dict = {k: iq_dict[k] for k in test_frames}
     # Create datasets - use configured SNR range
     print(f"\n📊 Using SNR range: {config['snr_range'][0]} to {config['snr_range'][1] - 1} dB")
     # Dataset objects
     train_dataset = CREPEDataset(
-        iq_dict=iq_dict,
-        bin_list=train_bins,
+        iq_dict=train_iq_dict,
+        #bin_list=train_frames,
         snr_range=config['snr_range'],  # Use configured SNR range
         gaussian_sigma=config['gaussian_sigma']
     )
     
     val_dataset = CREPEDataset(
-        iq_dict=iq_dict,
-        bin_list=val_bins,
+        iq_dict=val_iq_dict,
+        #bin_list=val_frames,
         snr_range=config['snr_range'],  # Same SNR range
         gaussian_sigma=config['gaussian_sigma']
     )
@@ -536,7 +544,7 @@ def main():
                 break
     
     # Save final model and history
-    torch.save(model.state_dict(), os.path.join(config['save_dir'], f"crepe_final_{config['model_suffix']}.pth"))
+    torch.save(model.state_dict(), os.path.join(config['save_dir'], f"crepe_final_{config['model_suffix']}(1803).pth"))
     with open(os.path.join(config['save_dir'], f"training_history_{config['model_suffix']}.pkl"), 'wb') as f:
         pickle.dump(history, f)
     
