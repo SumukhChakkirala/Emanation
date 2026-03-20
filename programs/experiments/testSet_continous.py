@@ -22,7 +22,7 @@ CREPE_FS = 16000
 CREPE_FRAME_LENGTH = 1024
 CREPE_N_BINS = 360
 CREPE_CENTS_PER_BIN = 20
-CENTS_OFFSET = 1997.3794084376191
+CENTS_OFFSET = 2051.148763  # Adjusted to match CREPE's frequency range more accurately
 
 
 def cents_to_hz(cents: float, fref: float = 10.0) -> float:
@@ -136,24 +136,33 @@ def plot_psd_by_bin(iq_dict: dict, all_bins: list, save_dir: str):
 # Dataset
 # =============================================================================
 
-def parse_key(key: str) -> Tuple[int, int, int]:
-    """Parse key to extract bin_idx, snr, and f_h (if available)."""
+def parse_key(key: str) -> Tuple[int, int, float]:
+    """
+    Parse key to extract bin_idx, snr, and f_h.
+    
+    Supports formats:
+    - Continuous: BIN_XXX_SNR_XX_IDX_XXXXX_FH_XXXX.X
+    - Old discrete: BIN_XXX_SNR_YY_AUG_ZZ
+    
+    Returns:
+        bin_idx, snr, f_h (f_h is None for old format)
+    """
     parts = key.split('_')
-    if key.startswith('FH_'):
-        # New format: FH_XXXX_BIN_XXX_SNR_XX_AUG_XX
-        f_h = int(parts[1])
-        bin_idx = int(parts[3])
-        snr = int(parts[5])
+    bin_idx = int(parts[1])
+    snr = int(parts[3])
+    
+    # Check if FH exists in key (continuous format)
+    if 'FH' in parts:
+        fh_idx = parts.index('FH') + 1
+        f_h = float(parts[fh_idx])
     else:
-        # Old format: BIN_XXX_SNR_YY_AUG_ZZ
         f_h = None
-        bin_idx = int(parts[1])
-        snr = int(parts[3])
+    
     return bin_idx, snr, f_h
 
 
 class CREPEDataset(Dataset):
-    """CREPE dataset for RF signals."""
+    """CREPE dataset for RF signals (supports continuous f_h)."""
     
     def __init__(
         self,
@@ -169,9 +178,10 @@ class CREPEDataset(Dataset):
         # Filter samples based on bin and SNR
         self.samples = []
         self.labels = []
+        self.fh_values = []  # Store continuous f_h values
         
         for key, signal in iq_dict.items():
-            bin_idx, snr, _ = parse_key(key)
+            bin_idx, snr, f_h = parse_key(key)
             
             if bin_list is not None and bin_idx not in bin_list:
                 continue
@@ -182,14 +192,15 @@ class CREPEDataset(Dataset):
             
             self.samples.append((key, signal))
             self.labels.append(bin_idx)
+            # Store f_h (use bin frequency if not available)
+            self.fh_values.append(f_h if f_h is not None else crepe_bin_to_hz(bin_idx))
         
         print(f"✓ Created dataset with {len(self.samples)} samples")
         if len(self.samples) > 0:
             unique_bins = sorted(list(set(self.labels)))
             print(f"  Unique bins: {len(unique_bins)} "
                   f"(range: {min(unique_bins)} to {max(unique_bins)})")
-            unique_freqs = [crepe_bin_to_hz(b) for b in unique_bins]
-            print(f"  Frequency range: {min(unique_freqs):.1f} Hz to {max(unique_freqs):.1f} Hz")
+            print(f"  f_h range: {min(self.fh_values):.1f} Hz to {max(self.fh_values):.1f} Hz")
     
     def __len__(self):
         return len(self.samples)
@@ -419,94 +430,183 @@ def evaluate_test_set(config, test_dataset, device='cuda'):
 # =============================================================================
 
 if __name__ == "__main__":
+
     print("=" * 80)
-    print("CREPE Model - Test Set Evaluation")
+    print("CREPE Model - Test Set Evaluation (Linear vs Log-Uniform)")
     print("=" * 80)
-    
-    config = {
-        'data_path': './IQData/iq_dict_continuous_freq.pkl',
-        'batch_size': 32,
-        'dropout': 0.25,
-        'gaussian_sigma': 1.25,
-        'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-        'save_dir': './models_crepe/',
-    }
-    
-    print(f"\nConfiguration:")
-    for k, v in config.items():
-        print(f"  {k}: {v}")
-    
-    # Load dataset
-    print(f"\n📂 Loading data from {config['data_path']}...")
-    with open(config['data_path'], 'rb') as f:
-        iq_dict = pickle.load(f)
-    print(f"✓ Loaded {len(iq_dict)} samples")
-    
-    # Get test bins (same split as training)
-    all_bins = sorted(list(set([parse_key(k)[0] for k in iq_dict.keys()])))
-    test_bins = [b for i, b in enumerate(all_bins) if i % 5 == 1]  # 20% test
-    
-    print(f"✓ Test bins: {len(test_bins)}")
-    
-    # Create test dataset
-    test_dataset = CREPEDataset(
-        iq_dict=iq_dict,
-        bin_list=test_bins,
-        snr_range=(15, 21),
-        gaussian_sigma=config['gaussian_sigma']
-    )
-    
-    # Evaluate
-    results = evaluate_test_set(config, test_dataset, device=config['device'])
-    
-    # ==========================================================================
-    # PSD Analysis
-    # ==========================================================================
-    print("\n" + "=" * 80)
-    print("📊 PSD ANALYSIS BY BIN")
-    print("=" * 80)
-    
-    print(f"\n{'Bin':<6} {'Expected F (Hz)':<16} {'Peak F (Hz)':<14} {'Peak Power (dB)':<16} {'Error (Hz)':<12}")
-    print("-" * 70)
-    
-    for bin_idx in all_bins[::5]:  # Every 5th bin
-        psd_result = analyze_bin_psd(iq_dict, bin_idx, snr=20)
-        if psd_result:
-            freq_error = abs(psd_result['peak_freq'] - psd_result['expected_freq'])
-            print(f"{bin_idx:<6} {psd_result['expected_freq']:<16.2f} {psd_result['peak_freq']:<14.2f} "
-                  f"{psd_result['peak_power_db']:<16.2f} {freq_error:<12.2f}")
-    
-    # Generate PSD plots
-    #plot_psd_by_bin(iq_dict, all_bins, config['save_dir'])
-    
-    # ==========================================================================
-    # Per-Bin Accuracy
-    # ==========================================================================
-    print("\n" + "=" * 80)
-    print("📊 PER-BIN TEST ACCURACY")
-    print("=" * 80)
-    
-    print(f"\n{'Bin':<6} {'Freq (Hz)':<12} {'RPA 50c (%)':<12}")
-    print("-" * 35)
-    
-    all_preds = results['predictions']
-    all_targets = results['targets']
-    
-    for bin_idx in sorted(set(all_targets)):
-        mask = all_targets == bin_idx
-        if mask.sum() > 0:
-            bin_preds = all_preds[mask]
-            bin_targets = all_targets[mask]
-            bin_rpa, _, _, _ = evaluate_predictions(bin_preds, bin_targets)
-            freq = crepe_bin_to_hz(bin_idx)
-            print(f"{bin_idx:<6} {freq:<12.1f} {bin_rpa:<12.1f}")
-    
-    # Save results
-    results_path = os.path.join(config['save_dir'], 'test_results_standalone.pkl')
-    with open(results_path, 'wb') as f:
-        pickle.dump(results, f)
-    
-    print(f"\n💾 Results saved to: {results_path}")
+
+    # Configurations for both models (absolute paths)
+    base_dir = r'C:\Users\User1\Downloads\Emanation'
+    configs = [
+        {
+            'name': 'Linear',
+            'data_path': os.path.join(base_dir, 'IQData', 'iq_dict_continuous_freq_SNR0_20-25-2-26.pkl'),
+            'model_path': os.path.join(base_dir, 'models_crepe', 'crepe_best_continuous(25-2).pth'),
+            'save_dir': os.path.join(base_dir, 'models_crepe'),
+        },
+        # C:\Users\User1\Downloads\Emanation\models_crepe\crepe_best_snr_15_20(25-2).pth
+        {
+            'name': 'Log-Uniform',
+            'data_path': os.path.join(base_dir, 'IQData', 'iq_dict_continuous_freq_SNR0_20_logarithmic.pkl'),
+            'model_path': os.path.join(base_dir, 'programs', 'dutyCycle=0.1', 'models', 'crepe_best_dc0.1_snr_neg20_20.pth'),
+            'save_dir': os.path.join(base_dir, 'models_crepe'),
+        }
+    ]
+
+    for cfg in configs:
+        print(f"\nConfiguration ({cfg['name']}):")
+        print(f"  Data path: {cfg['data_path']}")
+        print(f"  Model path: {cfg['model_path']}")
+        print(f"  Save dir: {cfg['save_dir']}")
+
+        # Load dataset
+        print(f"\n📂 Loading data from {cfg['data_path']}...")
+        with open(cfg['data_path'], 'rb') as f:
+            iq_dict = pickle.load(f)
+        print(f"✓ Loaded {len(iq_dict)} samples")
+
+        # Get test bins (same split as training)
+        all_bins = sorted(list(set([parse_key(k)[0] for k in iq_dict.keys()])))
+        test_bins = [b for i, b in enumerate(all_bins) if i % 5 == 1]
+        print(f"✓ Test bins: {len(test_bins)}")
+
+        # Create test dataset
+        test_dataset = CREPEDataset(
+            iq_dict=iq_dict,
+            bin_list=test_bins,
+            snr_range=(0, 21),
+            gaussian_sigma=1.25
+        )
+
+        # Evaluate
+        config_eval = {
+            'batch_size': 32,
+            'dropout': 0.25,
+            'save_dir': cfg['save_dir'],
+        }
+        def evaluate_test_set_custom(model_path, config, test_dataset, device='cuda'):
+            print(f"\n🔄 Loading best model from {model_path}...")
+            checkpoint = torch.load(model_path, weights_only=False, map_location=device)
+            model = CREPE(dropout=config['dropout']).to(device)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            model.eval()
+            test_loader = DataLoader(test_dataset, batch_size=config['batch_size'], shuffle=False, num_workers=0)
+            all_preds = []
+            all_targets = []
+            test_loss = 0.0
+            criterion = nn.BCEWithLogitsLoss()
+            with torch.no_grad():
+                for batch_idx, (x, y) in enumerate(tqdm(test_loader, desc="Test")):
+                    x, y = x.to(device), y.to(device)
+                    logits = model(x)
+                    loss = criterion(logits, y)
+                    test_loss += loss.item()
+                    all_preds.append(logits.cpu().numpy())
+                    true_bins = torch.argmax(y, dim=1).cpu().numpy()
+                    all_targets.append(true_bins)
+            all_preds = np.concatenate(all_preds, axis=0)
+            all_targets = np.concatenate(all_targets, axis=0)
+            test_loss /= len(test_loader)
+            rpa_50, rpa_25, rca, mean_error = evaluate_predictions(all_preds, all_targets)
+            print("\n" + "="*80)
+            print(f"📊 FINAL TEST SET EVALUATION ({cfg['name']})")
+            print("="*80)
+            print(f"\n┌─────────────────────────────────────┐")
+            print(f"│ Test Loss:          {test_loss:.6f}      │")
+            print(f"├─────────────────────────────────────┤")
+            print(f"│ RPA (50 cents):     {rpa_50:6.2f}%       │")
+            print(f"│ RPA (25 cents):     {rpa_25:6.2f}%       │")
+            print(f"│ RCA (exact bin):    {rca:6.2f}%       │")
+            print(f"│ Mean Error:         {mean_error:6.1f} cents     │")
+            print(f"└─────────────────────────────────────┘")
+            return {
+                'test_loss': test_loss,
+                'rpa_50': rpa_50,
+                'rpa_25': rpa_25,
+                'rca': rca,
+                'mean_error': mean_error,
+                'predictions': all_preds,
+                'targets': all_targets,
+                'true_freqs': np.array(test_dataset.fh_values),
+            }
+
+        results = evaluate_test_set_custom(cfg['model_path'], config_eval, test_dataset, device='cuda' if torch.cuda.is_available() else 'cpu')
+
+        # Scatterplot: True vs Predicted Frequency
+        print("\nGenerating scatterplot: True Frequency vs Predicted Frequency...")
+        all_preds = results['predictions']
+        all_targets = results['targets']
+        true_freqs = results['true_freqs']
+
+        pred_probs = 1 / (1 + np.exp(-all_preds))
+        pred_probs = pred_probs / (pred_probs.sum(axis=1, keepdims=True) + 1e-8)
+        pred_bins = []
+        for i in range(pred_probs.shape[0]):
+            cumsum = np.cumsum(pred_probs[i])
+            median_bin = np.searchsorted(cumsum, 0.5)
+            median_bin = np.clip(median_bin, 0, CREPE_N_BINS - 1)
+            pred_bins.append(median_bin)
+        pred_bins = np.array(pred_bins)
+        pred_freqs = np.array([crepe_bin_to_hz(b) for b in pred_bins])
+
+        # Plot 1: Linear Scale
+        plt.figure(figsize=(10, 8))
+        plt.scatter(true_freqs, pred_freqs, s=2, alpha=0.2, label=f'{cfg["name"]} Predictions')
+        plt.plot([min(true_freqs), max(true_freqs)], [min(true_freqs), max(true_freqs)], 'r--', linewidth=2, label='Ideal (y=x)')
+        plt.xlabel('True Frequency (Hz)', fontsize=12)
+        plt.ylabel('Predicted Frequency (Hz)', fontsize=12)
+        plt.title(f'CREPE: True vs Predicted Frequency (Linear Scale)\nMedian Prediction ({cfg["name"]})', fontsize=14, fontweight='bold')
+        plt.legend(loc='upper left', fontsize=10)
+        plt.grid(True, alpha=0.3)
+        plt.xlim([0, max(true_freqs) * 1.05])
+        plt.ylim([0, max(pred_freqs) * 1.05])
+        plt.tight_layout()
+        scatter_path_linear = os.path.join(cfg['save_dir'], f'scatter_true_vs_pred_freq_linear_{cfg["name"]}.png')
+        plt.savefig(scatter_path_linear, dpi=150)
+        plt.close()
+        print(f"✓ Scatterplot (Linear) saved to: {scatter_path_linear}")
+
+        # Plot 2: Log Scale (Base 2)
+        plt.figure(figsize=(10, 8))
+        plt.scatter(true_freqs, pred_freqs, s=2, alpha=0.2, label=f'{cfg["name"]} Predictions')
+        plt.plot([min(true_freqs), max(true_freqs)], [min(true_freqs), max(true_freqs)], 'r--', linewidth=2, label='Ideal (y=x)')
+        plt.xlabel('True Frequency (Hz)', fontsize=12)
+        plt.ylabel('Predicted Frequency (Hz)', fontsize=12)
+        plt.title(f'CREPE: True vs Predicted Frequency (Log₂ Scale)\nMedian Prediction ({cfg["name"]})', fontsize=14, fontweight='bold')
+        plt.legend(loc='upper left', fontsize=10)
+        plt.grid(True, alpha=0.3, which='both')
+        plt.xscale('log', base=2)
+        plt.yscale('log', base=2)
+        plt.xlim([min(true_freqs) * 0.9, max(true_freqs) * 1.1])
+        plt.ylim([min(pred_freqs) * 0.9, max(pred_freqs) * 1.1])
+        plt.tight_layout()
+        scatter_path_log = os.path.join(cfg['save_dir'], f'scatter_true_vs_pred_freq_log2_{cfg["name"]}.png')
+        plt.savefig(scatter_path_log, dpi=150)
+        plt.close()
+        print(f"✓ Scatterplot (Log₂) saved to: {scatter_path_log}")
+
+        # Plot: Average Absolute Error vs True Frequency
+        print("\nGenerating plot: Average Absolute Error vs True Frequency (grouped by f_h)...")
+        abs_errors = np.abs(pred_freqs - true_freqs)
+        fh_arr = true_freqs
+        unique_fh = np.unique(fh_arr)
+        avg_abs_error = []
+        for f in unique_fh:
+            mask = fh_arr == f
+            avg_abs_error.append(abs_errors[mask].mean())
+        avg_abs_error = np.array(avg_abs_error)
+        plt.figure(figsize=(12, 6))
+        plt.plot(unique_fh, avg_abs_error, lw=1, label=f'{cfg["name"]} Error')
+        plt.xlabel('True Frequency (Hz)')
+        plt.ylabel('Mean Absolute Error (Hz)')
+        plt.title(f'CREPE: Mean Absolute Error vs True Frequency (Continuous f_h) ({cfg["name"]})')
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        error_plot_path = os.path.join(cfg['save_dir'], f'mean_abs_error_vs_freq_{cfg["name"]}.png')
+        plt.savefig(error_plot_path, dpi=150)
+        plt.close()
+        print(f"✓ Error plot saved to: {error_plot_path}")
+
     print("\n" + "="*80)
-    print("✓ Test evaluation complete!")
+    print("✓ Test evaluation complete for both models!")
     print("="*80)
