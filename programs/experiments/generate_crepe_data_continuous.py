@@ -163,18 +163,18 @@ def generate_continuous_dataset(
 
 if __name__ == "__main__":
     OUTPUT_DIR = './IQData/'
-    OUTPUT_FILE = 'iq_dict_continuous_freq_SNR0_20(25-2-26).pkl'
+    OUTPUT_FILE = 'iq_dict_continuous_freq_SNR15_20-18-3-26.pkl'
     
     # Configuration
     config = {
         'output_path': os.path.join(OUTPUT_DIR, OUTPUT_FILE),
         'f_min': 32.7,
         'f_max': 2067.0,
-        'snr_list': list(range(0, 21)),  # 21 SNR levels (0 to 20 dB)
-        'n_input_frames': 33333,               # 10,000 random frequencies
+        'snr_list': list(range(15, 21)),  # 6 SNR levels (15 to 20 dB)
+        'n_input_frames': 66666,               # 10,000 random frequencies
         'duty_cycle': 0.5
     }
-    # Total: 33,333 frames × 21 SNRs = 699,993 samples (rounded to 700k for easier tracking)
+    # Total: 66,666 frames × 6 SNRs = 399,996 samples (rounded to 400k for easier tracking)
     # Total: 10,000 frames × 6 SNRs = 60,000 samples
     
     iq_dict = generate_continuous_dataset(**config)
