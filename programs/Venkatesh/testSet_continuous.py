@@ -250,10 +250,10 @@ def evaluate_continuous(config, test_dataset, device):
 
 def main():
     parser = argparse.ArgumentParser(description='Test continuous CREPE model')
-    parser.add_argument('--data_path', type=str, default='./IQData/iq_dict_continuous_freq_SNR15_20-18-3-26.pkl')
+    parser.add_argument('--data_path', type=str, default='IQData\iq_dict_continuous_freq_SNR0_20-20-3-26.pkl')
     parser.add_argument('--save_dir', type=str, default='./models_crepe/')
-    parser.add_argument('--model_suffix', type=str, default='snr_15_20(18-3)')
-    parser.add_argument('--snr_min', type=int, default=15)
+    parser.add_argument('--model_suffix', type=str, default='snr_neg20_20(20-3)')
+    parser.add_argument('--snr_min', type=int, default=-20)
     parser.add_argument('--snr_max', type=int, default=20)
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--dropout', type=float, default=0.25)
@@ -284,9 +284,9 @@ def main():
 
     all_frames = list(iq_dict.keys())
     _, temp_frames = train_test_split(all_frames, test_size=0.6, random_state=42)
-    _, test_frames = train_test_split(temp_frames, test_size=0.333, random_state=42)
+    _, test_frames = train_test_split(temp_frames, test_size=2/3, random_state=42)
     test_iq_dict = {k: iq_dict[k] for k in test_frames}
-    print(f"✓ Test frames: {len(test_frames)} ({100 * len(test_frames) / len(all_frames):.0f}%)")
+    print(f"✓ Test frames: {len(test_frames)} ({100 * len(test_frames) / len(all_frames):.0f}%) [40/20/40 split]")
 
     test_dataset = CREPEDataset(
         iq_dict=test_iq_dict,
