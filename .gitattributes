@@ -1,3 +1,4 @@
 *.pth filter=lfs diff=lfs merge=lfs -text
 models_crepe/crepe_final_snr_15_20(18-3)(1803).pth filter=lfs diff=lfs merge=lfs -text
 models_crepe/crepe_best_snr_15_20(18-3).pth filter=lfs diff=lfs merge=lfs -text
+programs/dutyCycle=0.1/models/*.pth filter=lfs diff=lfs merge=lfs -text
