@@ -17,7 +17,7 @@ import numpy as np
 import pickle
 import os
 import argparse
-from typing import Tuple, List, Dict
+from typing import Tuple, List, Dict, Optional
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split 
@@ -30,29 +30,53 @@ CREPE_FS = 16000
 CREPE_FRAME_LENGTH = 1024
 CREPE_N_BINS = 360
 CREPE_CENTS_PER_BIN = 20
-CENTS_OFFSET = 2051.148763  # Adjusted to match CREPE's frequency range more accurately (bin 0 = 32.7 Hz, bin 360 = 1975.5 Hz)  
-CREPE_F_REF = 10.0  # Reference frequency for cents conversion
-def cents_to_hz(cents: float, fref: float = 10.0) -> float:
-    """Convert cents to Hz."""
-    return fref * (2.0 ** (cents / 1200.0))
+DEFAULT_RF_FMIN = 32.7
+DEFAULT_RF_FMAX = 2069.0
+CASE_RF_RANGES = {
+    'A': (800e3, 1e6),
+    'B': (3.2e3, 100e3),
+    'C': (32.0, 4e3),
+}
 
 
-def crepe_bin_to_hz(bin_idx: int) -> float:
-    """Convert CREPE bin to Hz."""
-    cents = CENTS_OFFSET + bin_idx * CREPE_CENTS_PER_BIN
-    return cents_to_hz(cents)
+def _infer_case_from_path(data_path: str) -> Optional[str]:
+    lower_path = os.path.basename(data_path).lower()
+    for case in ('a', 'b', 'c'):
+        if f"case{case}" in lower_path:
+            return case.upper()
+    return None
 
 
-def hz_to_cents(freq_hz: float, fref: float = 10.0) -> float:
-    """Convert Hz to cents."""
-    return 1200.0 * np.log2(freq_hz / fref)
+def _resolve_rf_range(data_path: str, case: str, rf_fmin: Optional[float], rf_fmax: Optional[float]) -> Tuple[float, float, str]:
+    if rf_fmin is not None and rf_fmax is not None:
+        return float(rf_fmin), float(rf_fmax), 'manual'
+
+    case_u = case.upper() if case else ''
+    if case_u in CASE_RF_RANGES:
+        lo, hi = CASE_RF_RANGES[case_u]
+        return float(lo), float(hi), f'case-{case_u}'
+
+    inferred_case = _infer_case_from_path(data_path)
+    if inferred_case in CASE_RF_RANGES:
+        lo, hi = CASE_RF_RANGES[inferred_case]
+        return float(lo), float(hi), f'path-inferred-{inferred_case}'
+
+    return float(DEFAULT_RF_FMIN), float(DEFAULT_RF_FMAX), 'default-crepe'
 
 
-def hz_to_crepe_bin(freq_hz: float) -> int:
-    """Convert Hz to CREPE bin."""
-    cents = hz_to_cents(freq_hz)
-    bin_idx = int(round((cents - CENTS_OFFSET) / CREPE_CENTS_PER_BIN))
-    return np.clip(bin_idx, 0, CREPE_N_BINS - 1)
+def freq_to_model_bin(freq_hz: float, fmin_hz: float, fmax_hz: float) -> float:
+    freq = float(np.clip(freq_hz, fmin_hz, fmax_hz))
+    lo = np.log2(float(fmin_hz))
+    hi = np.log2(float(fmax_hz))
+    pos = (np.log2(freq) - lo) / (hi - lo + 1e-12)
+    return float(np.clip(pos * (CREPE_N_BINS - 1), 0.0, CREPE_N_BINS - 1.0))
+
+
+def model_bin_to_freq(bin_idx: float, fmin_hz: float, fmax_hz: float) -> float:
+    pos = float(np.clip(bin_idx, 0.0, CREPE_N_BINS - 1.0)) / float(CREPE_N_BINS - 1)
+    lo = np.log2(float(fmin_hz))
+    hi = np.log2(float(fmax_hz))
+    return float(2.0 ** (lo + pos * (hi - lo)))
 
 def parse_key(key: str) -> Tuple[int, int, float]:
     parts = key.split('_')
@@ -85,6 +109,8 @@ class CREPEDataset(Dataset):
         snr_range: Tuple[int, int] = None,
         target_length: int = CREPE_FRAME_LENGTH,
         gaussian_sigma: float = 25.0,
+        rf_fmin: float = DEFAULT_RF_FMIN,
+        rf_fmax: float = DEFAULT_RF_FMAX,
     ):
         """
         Args:
@@ -96,6 +122,9 @@ class CREPEDataset(Dataset):
         """
         self.target_length = target_length
         self.gaussian_sigma = gaussian_sigma
+        self.gaussian_sigma_bins = max(float(gaussian_sigma) / float(CREPE_CENTS_PER_BIN), 1e-6)
+        self.rf_fmin = float(rf_fmin)
+        self.rf_fmax = float(rf_fmax)
         
         # Filter samples based on bin and SNR
         self.samples = []
@@ -116,7 +145,7 @@ class CREPEDataset(Dataset):
                     continue
 
             if fh is None:
-                fh = crepe_bin_to_hz(bin_idx)
+                fh = model_bin_to_freq(bin_idx, self.rf_fmin, self.rf_fmax)
 
             self.samples.append((key, signal))
             self.fh.append(fh)
@@ -166,14 +195,9 @@ class CREPEDataset(Dataset):
         In bins: sigma = 25 cents / 20 cents per bin = 1.25 bins
         """
         label = np.zeros(CREPE_N_BINS, dtype=np.float64)
-        
-        # Gaussian centered at true_bin with sigma in bins
-        
-        c_true = 1200*np.log2(fh/CREPE_F_REF)
+        true_bin = freq_to_model_bin(fh, self.rf_fmin, self.rf_fmax)
         for i in range(CREPE_N_BINS):
-            c_i = CREPE_CENTS_PER_BIN*(i-1) + CENTS_OFFSET
-            label[i] = np.exp(-((c_i - c_true) ** 2) / (2 * (self.gaussian_sigma ** 2)))
-            # label[i] = np.exp(-((i - true_bin) ** 2) / (2 * self.gaussian_sigma ** 2))
+            label[i] = np.exp(-((float(i) - true_bin) ** 2) / (2 * (self.gaussian_sigma_bins ** 2)))
         
         # Normalize (though paper doesn't explicitly do this)
         # label = label / (label.sum() + 1e-8)
@@ -279,7 +303,12 @@ class CREPE(nn.Module):
 # Evaluation Metrics
 # =============================================================================
 
-def evaluate_predictions(predictions: np.ndarray, targets: np.ndarray) -> Tuple[float, float, float, float]:
+def evaluate_predictions(
+    predictions: np.ndarray,
+    targets: np.ndarray,
+    rf_fmin: float,
+    rf_fmax: float,
+) -> Tuple[float, float, float, float]:
     """
     Evaluate pitch predictions using CREPE metrics.
     
@@ -303,8 +332,8 @@ def evaluate_predictions(predictions: np.ndarray, targets: np.ndarray) -> Tuple[
     pred_bins = np.sum(pred_probs * bin_indices, axis=1) / np.sum(pred_probs, axis=1)
     
     # Convert to frequencies
-    pred_freqs = np.array([crepe_bin_to_hz(b) for b in pred_bins])
-    true_freqs = np.array([crepe_bin_to_hz(b) for b in targets])
+    pred_freqs = np.array([model_bin_to_freq(b, rf_fmin, rf_fmax) for b in pred_bins])
+    true_freqs = np.array([model_bin_to_freq(b, rf_fmin, rf_fmax) for b in targets])
     
     # Compute errors in cents
     errors_cents = np.abs(1200 * np.log2(pred_freqs / (true_freqs + 1e-8)))
@@ -325,12 +354,17 @@ def evaluate_predictions(predictions: np.ndarray, targets: np.ndarray) -> Tuple[
     return rpa_50, rpa_25, rca, mean_error
 
 
-def evaluate(model, dataloader, criterion, device):
+def evaluate(model, dataloader, criterion, device, rf_fmin: float, rf_fmax: float):
     """Evaluate model on a dataset."""
     model.eval()
     total_loss = 0
-    all_predictions = []
-    all_targets = []
+    total_samples = 0
+    sum_error_cents = 0.0
+    count_rpa_50 = 0
+    count_rpa_25 = 0
+    count_rca_50 = 0
+
+    bin_indices = np.arange(CREPE_N_BINS, dtype=np.float64)
     
     with torch.no_grad():
         for inputs, labels in dataloader:
@@ -341,19 +375,38 @@ def evaluate(model, dataloader, criterion, device):
             loss = criterion(outputs, labels)
             
             total_loss += loss.item()
-            all_predictions.append(outputs.cpu().numpy())
-            
-            # Get true bin from Gaussian label
-            true_bins = torch.argmax(labels, dim=1).cpu().numpy()
-            all_targets.append(true_bins)
+            logits_np = outputs.cpu().numpy().astype(np.float64)
+            true_bins = torch.argmax(labels, dim=1).cpu().numpy().astype(np.float64)
+
+            pred_probs = 1.0 / (1.0 + np.exp(-logits_np))
+            pred_bins = np.sum(pred_probs * bin_indices[None, :], axis=1) / (np.sum(pred_probs, axis=1) + 1e-8)
+
+            pred_freqs = np.array([model_bin_to_freq(b, rf_fmin, rf_fmax) for b in pred_bins], dtype=np.float64)
+            true_freqs = np.array([model_bin_to_freq(b, rf_fmin, rf_fmax) for b in true_bins], dtype=np.float64)
+            errors_cents = np.abs(1200.0 * np.log2((pred_freqs + 1e-8) / (true_freqs + 1e-8)))
+            chroma_errors = np.minimum(errors_cents % 1200.0, 1200.0 - (errors_cents % 1200.0))
+
+            batch_n = int(errors_cents.shape[0])
+            total_samples += batch_n
+            sum_error_cents += float(np.sum(errors_cents))
+            count_rpa_50 += int(np.sum(errors_cents <= 50.0))
+            count_rpa_25 += int(np.sum(errors_cents <= 25.0))
+            count_rca_50 += int(np.sum(chroma_errors <= 50.0))
     
     avg_loss = total_loss / len(dataloader)
-    #all_predictions = np.concatenate(all_predictions, axis=0)
-    #all_targets = np.concatenate(all_targets, axis=0)
-    
-    #rpa_50, rpa_25, rca, mean_error = evaluate_predictions(all_predictions, all_targets)
-    return avg_loss
-    #return avg_loss, rpa_50, rpa_25, rca, mean_error
+
+    if total_samples > 0:
+        rpa_50 = 100.0 * count_rpa_50 / total_samples
+        rpa_25 = 100.0 * count_rpa_25 / total_samples
+        rca = 100.0 * count_rca_50 / total_samples
+        mean_error = sum_error_cents / total_samples
+    else:
+        rpa_50 = 0.0
+        rpa_25 = 0.0
+        rca = 0.0
+        mean_error = 0.0
+
+    return avg_loss, rpa_50, rpa_25, rca, mean_error
 
 
 # =============================================================================
@@ -393,7 +446,10 @@ def main():
                         help='Path to training dataset pickle')
     parser.add_argument('--save_dir', type=str, default='./models_crepe/',
                         help='Directory to save checkpoints/results')
-    parser.add_argument('--snr_min', type=int, default=15, help='Minimum SNR (default: 0)')
+    parser.add_argument('--case', type=str, default='AUTO', choices=['AUTO', 'A', 'B', 'C'])
+    parser.add_argument('--rf_fmin', type=float, default=None)
+    parser.add_argument('--rf_fmax', type=float, default=None)
+    parser.add_argument('--snr_min', type=int, default=-10, help='Minimum SNR (default: -10)')
     parser.add_argument('--snr_max', type=int, default=20, help='Maximum SNR (default: 20)')
     parser.add_argument('--model_suffix', type=str, default='snr_15_20(18-3)', help='Suffix for model files')
     parser.add_argument('--batch_size', type=int, default=64, help='Batch size')
@@ -406,6 +462,9 @@ def main():
     parser.add_argument('--patience', type=int, default=5, help='Early stopping patience')
     parser.add_argument('--lr_patience', type=int, default=2, help='LR scheduler patience')
     args = parser.parse_args()
+
+    case_arg = '' if args.case == 'AUTO' else args.case
+    rf_fmin, rf_fmax, rf_range_source = _resolve_rf_range(args.data_path, case_arg, args.rf_fmin, args.rf_fmax)
     
     # Configuration block - EDIT THESE VALUES DIRECTLY
     config = {
@@ -422,6 +481,10 @@ def main():
         'save_dir': args.save_dir,
         'patience': args.patience,
         'lr_patience': args.lr_patience,
+        'case': case_arg if case_arg else 'AUTO',
+        'rf_fmin': rf_fmin,
+        'rf_fmax': rf_fmax,
+        'rf_range_source': rf_range_source,
         'snr_range': (args.snr_min, args.snr_max),
         'model_suffix': args.model_suffix,
     }
@@ -474,14 +537,18 @@ def main():
         iq_dict=train_iq_dict,
         #bin_list=train_frames,
         snr_range=config['snr_range'],  # Use configured SNR range
-        gaussian_sigma=config['gaussian_sigma']
+        gaussian_sigma=config['gaussian_sigma'],
+        rf_fmin=config['rf_fmin'],
+        rf_fmax=config['rf_fmax'],
     )
     
     val_dataset = CREPEDataset(
         iq_dict=val_iq_dict,
         #bin_list=val_frames,
         snr_range=config['snr_range'],  # Same SNR range
-        gaussian_sigma=config['gaussian_sigma']
+        gaussian_sigma=config['gaussian_sigma'],
+        rf_fmin=config['rf_fmin'],
+        rf_fmax=config['rf_fmax'],
     )
     
     train_loader = DataLoader(train_dataset, batch_size=config['batch_size'], 
@@ -526,14 +593,20 @@ def main():
         train_loss = train_epoch(model, train_loader, criterion, optimizer, device, epoch)
         
         # Validate
-        # val_loss, rpa_50, rpa_25, rca, mean_error = evaluate(model, val_loader, criterion, device)
-        val_loss = evaluate(model, val_loader, criterion, device)
+        val_loss, rpa_50, rpa_25, rca, mean_error = evaluate(
+            model,
+            val_loader,
+            criterion,
+            device,
+            config['rf_fmin'],
+            config['rf_fmax'],
+        )
 
         history['train_loss'].append(train_loss)
         history['val_loss'].append(val_loss)
-        # history['rpa_50'].append(rpa_50)
-        # history['rpa_25'].append(rpa_25)
-        # history['rca'].append(rca)
+        history['rpa_50'].append(rpa_50)
+        history['rpa_25'].append(rpa_25)
+        history['rca'].append(rca)
         
         # Learning rate scheduler step
         scheduler.step(val_loss)
@@ -547,10 +620,10 @@ def main():
         print(f"│ Val Loss:       {val_loss:.6f}")
         print(f"│ Learning Rate:  {current_lr:.6f}")
         print(f"├─────────────────────────────────────────┤")
-        # print(f"│ RPA (50 cents): {rpa_50:6.2f}%")
-        # print(f"│ RPA (25 cents): {rpa_25:6.2f}%")
-        # print(f"│ RCA:            {rca:6.2f}%")
-        # print(f"│ Mean Error:     {mean_error:6.1f} cents")
+        print(f"│ RPA (50 cents): {rpa_50:6.2f}%")
+        print(f"│ RPA (25 cents): {rpa_25:6.2f}%")
+        print(f"│ RCA:            {rca:6.2f}%")
+        print(f"│ Mean Error:     {mean_error:6.1f} cents")
         print(f"└─────────────────────────────────────────┘\n")
         
         # Previous RPA-based checkpointing (disabled):

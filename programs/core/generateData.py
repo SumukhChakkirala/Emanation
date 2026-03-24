@@ -15,9 +15,19 @@ Total samples: n_input_frames × len(snr_list)
 import numpy as np
 import pickle
 import os
+import argparse
 from tqdm import tqdm
 from scipy import signal
 import yaml
+
+try:
+    import cupy as cp  # type: ignore[import-not-found]
+    from cupyx.scipy import signal as csignal  # type: ignore[import-not-found]
+    GPU_AVAILABLE = True
+except Exception:
+    cp = None
+    csignal = None
+    GPU_AVAILABLE = False
 
 # Single main seed for reproducible signal parameters (Fh, duty cycle)
 main_seed = 1234
@@ -25,6 +35,9 @@ rng = np.random.default_rng(seed=main_seed)
 
 # Separate unseeded generator for random noise (different each run)
 noise_rng = np.random.default_rng()
+
+_CPU_TAPS_CACHE = {}
+_GPU_TAPS_CACHE = {}
 
 # Import from existing code
 from generate_crepe_data import (
@@ -43,6 +56,68 @@ def _load_emanation_config(cfg_path: str = 'synapse_emanation_search.yaml') -> d
     return {'EmanationDetection': {'kaiser_beta_hh': 10.0, 'numtaps': 129}}
 
 
+def _case_decimation_params(case: str, fs_raw: float):
+    case_u = case.upper()
+    if case_u == 'B':
+        return 1e6, 25
+    if case_u == 'C':
+        cutoff_hz = 40e3
+        dec_order = int(round(fs_raw / cutoff_hz))
+        return cutoff_hz, max(dec_order, 1)
+    return None, 1
+
+
+def _get_cpu_taps(fs_raw: float, cutoff_hz: float, numtaps: int, kaiser_beta_hh: float):
+    key = (float(fs_raw), float(cutoff_hz), int(numtaps), float(kaiser_beta_hh))
+    taps = _CPU_TAPS_CACHE.get(key)
+    if taps is None:
+        taps = signal.firwin(
+            int(numtaps),
+            float(cutoff_hz),
+            window=('kaiser', float(kaiser_beta_hh)),
+            fs=float(fs_raw)
+        ).astype(np.float32)
+        _CPU_TAPS_CACHE[key] = taps
+    return taps
+
+
+def _get_gpu_taps(cpu_taps: np.ndarray):
+    if not GPU_AVAILABLE:
+        return None
+    key = (cpu_taps.shape[0], str(cpu_taps.dtype), float(cpu_taps[0]), float(cpu_taps[-1]))
+    taps = _GPU_TAPS_CACHE.get(key)
+    if taps is None:
+        taps = cp.asarray(cpu_taps)
+        _GPU_TAPS_CACHE[key] = taps
+    return taps
+
+
+def _apply_case_filter_and_decimate(
+    iq_signal: np.ndarray,
+    fs_raw: float,
+    case: str,
+    numtaps: int,
+    kaiser_beta_hh: float,
+    use_gpu: bool = False,
+):
+    x = np.asarray(iq_signal, dtype=np.complex64)
+    cutoff_hz, dec_order = _case_decimation_params(case, fs_raw)
+    if cutoff_hz is None:
+        return x, float(fs_raw)
+
+    taps_cpu = _get_cpu_taps(fs_raw, cutoff_hz, numtaps, kaiser_beta_hh)
+
+    if use_gpu and GPU_AVAILABLE:
+        x_gpu = cp.asarray(x)
+        taps_gpu = _get_gpu_taps(taps_cpu)
+        x_dec = csignal.upfirdn(taps_gpu, x_gpu, up=1, down=int(dec_order))
+        x_out = cp.asnumpy(x_dec)
+    else:
+        x_out = signal.upfirdn(taps_cpu, x, up=1, down=int(dec_order))
+
+    return np.asarray(x_out, dtype=np.complex64), float(fs_raw) / float(dec_order)
+
+
 def _extract_1024_frame_from_25mhz(
     iq_signal: np.ndarray,
     fs_raw: float,
@@ -50,6 +125,7 @@ def _extract_1024_frame_from_25mhz(
     cfg: dict,
     target_length: int = CREPE_FRAME_LENGTH,
     welch_nperseg: int = 1000,
+    use_gpu: bool = False,
 ) -> np.ndarray:
     """Convert long IQ snapshot to fixed 1024-point real frame for CNN input."""
     _, frame, _ = _extract_psd_and_ifft_from_25mhz(
@@ -59,6 +135,7 @@ def _extract_1024_frame_from_25mhz(
         cfg=cfg,
         target_length=target_length,
         welch_nperseg=welch_nperseg,
+        use_gpu=use_gpu,
     )
     return frame
 
@@ -70,38 +147,28 @@ def _extract_psd_and_ifft_from_25mhz(
     cfg: dict,
     target_length: int = CREPE_FRAME_LENGTH,
     welch_nperseg: int = 1000,
+    use_gpu: bool = False,
 ):
     """Convert long IQ snapshot to PSD (1000 bins) and fixed 1024-point IFFT real frame."""
     ed_cfg = cfg.get('EmanationDetection', {}) if cfg is not None else {}
     kaiser_beta_hh = float(ed_cfg.get('kaiser_beta_hh', 10.0))
     numtaps = int(ed_cfg.get('numtaps', 129))
 
-    x = np.asarray(iq_signal, dtype=np.complex64)
-    fs_eff = float(fs_raw)
-
-    case_u = case.upper()
-    if case_u == 'B':
-        cutoff_hz = 1e6
-        dec_order = 25
-        taps = signal.firwin(numtaps, cutoff_hz, window=('kaiser', kaiser_beta_hh), fs=fs_eff)
-        x = signal.lfilter(taps, 1, x)
-        x = signal.decimate(x, dec_order, ftype='fir', zero_phase=True)
-        fs_eff = fs_eff / dec_order
-    elif case_u == 'C':
-        cutoff_hz = 40e3
-        dec_order = int(fs_eff / cutoff_hz)  # 25e6/40e3 = 625
-        dec_order = max(dec_order, 1)
-        taps = signal.firwin(numtaps, cutoff_hz, window=('kaiser', kaiser_beta_hh), fs=fs_eff)
-        x = signal.lfilter(taps, 1, x)
-        x = signal.decimate(x, dec_order, ftype='fir', zero_phase=True)
-        fs_eff = fs_eff / dec_order
+    x, fs_eff = _apply_case_filter_and_decimate(
+        iq_signal=iq_signal,
+        fs_raw=fs_raw,
+        case=case,
+        numtaps=numtaps,
+        kaiser_beta_hh=kaiser_beta_hh,
+        use_gpu=use_gpu,
+    )
 
     x_feature = np.real(np.multiply(x, np.conj(x)))
     x_feature = x_feature - np.mean(x_feature)
 
     nperseg = min(int(welch_nperseg), len(x_feature))
     if nperseg < 8:
-        return np.zeros(target_length, dtype=np.float32)
+        return np.zeros(1000, dtype=np.float64), np.zeros(target_length, dtype=np.float32), fs_eff
 
     window = signal.windows.kaiser(nperseg, beta=kaiser_beta_hh)
     _, psd = signal.welch(
@@ -147,8 +214,9 @@ def generate_25mhz_case_dataset(
     n_input_frames: int = 10000,
     duty_cycle: float = 0.5,
     fs_raw: float = 25e6,
-    capture_duration_s: float = 0.1,
+    capture_duration_s: float = 0.01,
     cfg_path: str = 'synapse_emanation_search.yaml',
+    use_gpu: bool = False,
 ) -> dict:
     """Generate 25 MHz Case A/B/C dataset with model-ready 1024-point inputs."""
     if snr_list is None:
@@ -170,6 +238,7 @@ def generate_25mhz_case_dataset(
     print(f"  SNR levels: {snr_list}")
     print(f"  input frames: {n_input_frames:,}")
     print(f"  total samples: {total_samples:,}")
+    print(f"  backend: {'GPU(CuPy)' if (use_gpu and GPU_AVAILABLE) else 'CPU(SciPy)'}")
 
     iq_dict = {}
     for frame_idx in tqdm(range(n_input_frames), desc=f"Case-{case.upper()} frames"):
@@ -191,7 +260,8 @@ def generate_25mhz_case_dataset(
                 case=case,
                 cfg=cfg,
                 target_length=CREPE_FRAME_LENGTH,
-                welch_nperseg=1000
+                welch_nperseg=1000,
+                use_gpu=use_gpu,
             )
 
             key = f"BIN_{bin_idx:03d}_SNR_{snr:+03d}_IDX_{frame_idx:05d}_FH_{f_h:09.1f}_CASE_{case.upper()}"
@@ -203,6 +273,78 @@ def generate_25mhz_case_dataset(
 
     print(f"\n✓ Saved {len(iq_dict):,} samples to {output_path}")
     return iq_dict
+
+
+def run_gpu_quality_check(
+    case: str = 'B',
+    trials: int = 3,
+    snr_db: float = 20.0,
+    fs_raw: float = 25e6,
+    cfg_path: str = 'synapse_emanation_search.yaml',
+):
+    """Quick parity check between CPU and GPU processing paths."""
+    if not GPU_AVAILABLE:
+        print("GPU quality check skipped: CuPy is not available.")
+        return None
+
+    cfg = _load_emanation_config(cfg_path)
+    local_rng = np.random.default_rng(2026)
+    local_noise_rng = np.random.default_rng(2027)
+
+    if case.upper() == 'A':
+        f_min, f_max, duration = 800e3, 1e6, 0.01
+    elif case.upper() == 'B':
+        f_min, f_max, duration = 3.2e3, 100e3, 0.01
+    else:
+        f_min, f_max, duration = 32.0, 4e3, 0.01
+
+    mse_list = []
+    max_abs_list = []
+
+    for _ in range(int(trials)):
+        f_h = float(np.round(local_rng.uniform(f_min, f_max), 1))
+        clean_signal = generate_dirac_comb_signal(
+            F_h=f_h,
+            Fs=fs_raw,
+            duration=duration,
+            duty_cycle=0.5
+        )
+        noisy_signal = add_complex_noise(clean_signal, snr_db, local_noise_rng)
+
+        _, frame_cpu, _ = _extract_psd_and_ifft_from_25mhz(
+            iq_signal=noisy_signal,
+            fs_raw=fs_raw,
+            case=case,
+            cfg=cfg,
+            target_length=CREPE_FRAME_LENGTH,
+            welch_nperseg=1000,
+            use_gpu=False,
+        )
+        _, frame_gpu, _ = _extract_psd_and_ifft_from_25mhz(
+            iq_signal=noisy_signal,
+            fs_raw=fs_raw,
+            case=case,
+            cfg=cfg,
+            target_length=CREPE_FRAME_LENGTH,
+            welch_nperseg=1000,
+            use_gpu=True,
+        )
+
+        diff = frame_cpu.astype(np.float64) - frame_gpu.astype(np.float64)
+        mse_list.append(float(np.mean(diff ** 2)))
+        max_abs_list.append(float(np.max(np.abs(diff))))
+
+    metrics = {
+        'case': case.upper(),
+        'trials': int(trials),
+        'mse_mean': float(np.mean(mse_list)),
+        'max_abs_mean': float(np.mean(max_abs_list)),
+        'max_abs_worst': float(np.max(max_abs_list)),
+    }
+
+    print("GPU quality check:")
+    print(metrics)
+    return metrics
 
 
 # def generate_random_fh(f_min: float, f_max: float, seed: int) -> float:
@@ -363,6 +505,8 @@ def save_dataset_info(output_path: str, iq_dict: dict, case: str, params: dict) 
         f.write(f"  Number of input frames: {params['n_input_frames']:,}\n")
         f.write(f"  SNR levels: {unique_snr}\n")
         f.write(f"  Main seed: {main_seed}\n\n")
+        if 'use_gpu' in params:
+            f.write(f"  Backend: {'GPU(CuPy)' if params['use_gpu'] else 'CPU(SciPy)'}\n\n")
         
         f.write("DATASET STATISTICS:\n")
         f.write(f"  Total samples: {len(iq_dict):,}\n")
@@ -408,60 +552,89 @@ def save_dataset_info(output_path: str, iq_dict: dict, case: str, params: dict) 
 
 # ...existing code...
 
+def _case_defaults(case: str, n_input_frames: int, use_gpu: bool):
+    case_u = case.upper()
+    if case_u == 'A':
+        params = {
+            'fs_raw': 25e6,
+            'capture_duration_s': 0.01,
+            'f_min': 800e3,
+            'f_max': 1e6,
+            'n_input_frames': n_input_frames,
+            'duty_cycle': 0.5,
+            'use_gpu': use_gpu,
+        }
+        filename = 'iq_dict_caseA_25MHz(23-3-26).pkl'
+    elif case_u == 'B':
+        params = {
+            'fs_raw': 25e6,
+            'capture_duration_s': 0.01,
+            'f_min': 3.2e3,
+            'f_max': 100e3,
+            'n_input_frames': n_input_frames,
+            'duty_cycle': 0.5,
+            'use_gpu': use_gpu,
+        }
+        filename = 'iq_dict_caseB_25MHz(23-3-26).pkl'
+    elif case_u == 'C':
+        params = {
+            'fs_raw': 25e6,
+            'capture_duration_s': 0.01,
+            'f_min': 32.0,
+            'f_max': 4e3,
+            'n_input_frames': n_input_frames,
+            'duty_cycle': 0.5,
+            'use_gpu': use_gpu,
+        }
+        filename = 'iq_dict_caseC_25MHz(23-3-26).pkl'
+    else:
+        raise ValueError(f"Unsupported case: {case}")
+
+    return params, list(range(-10, 21)), filename
+
+
+def _run_single_case(case: str, output_dir: str, n_input_frames: int, use_gpu: bool):
+    params, snr_list, filename = _case_defaults(case, n_input_frames, use_gpu)
+    output_path = os.path.join(output_dir, filename)
+    iq_dict = generate_25mhz_case_dataset(
+        output_path=output_path,
+        case=case,
+        snr_list=snr_list,
+        **params,
+    )
+    save_dataset_info(output_path, iq_dict, case, params)
+
+
 if __name__ == "__main__":
-    OUTPUT_DIR = './results/'
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    parser = argparse.ArgumentParser(description='Generate 25MHz Case A/B/C datasets')
+    parser.add_argument('--case', type=str, default='ALL', choices=['A', 'B', 'C', 'ALL'])
+    parser.add_argument('--output_dir', type=str, default='./results/')
+    parser.add_argument('--n_input_frames', type=int, default=33333)
+    parser.add_argument('--backend', type=str, default='auto', choices=['auto', 'cpu', 'gpu'])
+    parser.add_argument('--quality_check', action='store_true')
+    args = parser.parse_args()
 
-    # Case A: detect fh in [800 kHz, 1 MHz]
-    # params_a = {
-    #     'fs_raw': 25e6,
-    #     'capture_duration_s': 0.1,
-    #     'f_min': 800e3,
-    #     'f_max': 1e6,
-    #     'n_input_frames': 33333,
-    #     'duty_cycle': 0.5
-    # }
-    # snr_list_a = list(range(-10, 21))
-    # dict_a = generate_25mhz_case_dataset(
-    #     output_path=os.path.join(OUTPUT_DIR, 'iq_dict_caseA_25MHz(23-3-26).pkl'),
-    #     case='A',
-    #     snr_list=snr_list_a,
-    #     **params_a
-    # )
-    # save_dataset_info(os.path.join(OUTPUT_DIR, 'iq_dict_caseA_25MHz(23-3-26).pkl'), dict_a, 'A', params_a)
+    output_dir = args.output_dir
+    os.makedirs(output_dir, exist_ok=True)
 
-    # Case B: detect fh in [3.2 kHz, 100 kHz]
-    params_b = {
-        'fs_raw': 25e6,
-        'capture_duration_s': 0.01,
-        'f_min': 3.2e3,
-        'f_max': 100e3,
-        'n_input_frames': 33333,
-        'duty_cycle': 0.5
-    }
-    snr_list_b = list(range(-10, 21))
-    dict_b = generate_25mhz_case_dataset(
-        output_path=os.path.join(OUTPUT_DIR, 'iq_dict_caseB_25MHz(23-3-26).pkl'),
-        case='B',
-        snr_list=snr_list_b,
-        **params_b
-    )
-    save_dataset_info(os.path.join(OUTPUT_DIR, 'iq_dict_caseB_25MHz(23-3-26).pkl'), dict_b, 'B', params_b)
+    if args.backend == 'gpu':
+        if not GPU_AVAILABLE:
+            raise RuntimeError('GPU backend requested but CuPy is not available.')
+        use_gpu = True
+    elif args.backend == 'cpu':
+        use_gpu = False
+    else:
+        use_gpu = GPU_AVAILABLE
 
-    # Case C: detect lower fundamentals, strong decimation path
-    params_c = {
-        'fs_raw': 25e6,
-        'capture_duration_s': 0.01,
-        'f_min': 32.0,
-        'f_max': 4e3,
-        'n_input_frames': 33333,
-        'duty_cycle': 0.5
-    }
-    snr_list_c = list(range(-10, 21))
-    dict_c = generate_25mhz_case_dataset(
-        output_path=os.path.join(OUTPUT_DIR, 'iq_dict_caseC_25MHz(23-3-26).pkl'),
-        case='C',
-        snr_list=snr_list_c,
-        **params_c
-    )
-    save_dataset_info(os.path.join(OUTPUT_DIR, 'iq_dict_caseC_25MHz(23-3-26).pkl'), dict_c, 'C', params_c)
+    print(f"CuPy available: {GPU_AVAILABLE}")
+    print(f"Selected backend: {'GPU(CuPy)' if use_gpu else 'CPU(SciPy)'}")
+
+    if args.quality_check and use_gpu:
+        run_gpu_quality_check(case='B', trials=3, snr_db=20.0)
+        run_gpu_quality_check(case='C', trials=3, snr_db=20.0)
+
+    if args.case == 'ALL':
+        for case_name in ['A', 'B', 'C']:
+            _run_single_case(case_name, output_dir, args.n_input_frames, use_gpu)
+    else:
+        _run_single_case(args.case, output_dir, args.n_input_frames, use_gpu)
