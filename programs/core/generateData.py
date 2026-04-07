@@ -39,13 +39,29 @@ noise_rng = np.random.default_rng()
 _CPU_TAPS_CACHE = {}
 _GPU_TAPS_CACHE = {}
 
+# CREPE bin constants
+CREPE_N_BINS = 360
+CREPE_CENTS_PER_BIN = 20
+
+
+def freq_to_model_bin(freq_hz: float, fmin_hz: float, fmax_hz: float) -> int:
+    """
+    Map RF frequency to CREPE bin using case-specific frequency range.
+    Uses logarithmic (musical) scale like CREPE paper.
+    """
+    freq = float(np.clip(freq_hz, fmin_hz, fmax_hz))
+    lo = np.log2(float(fmin_hz))
+    hi = np.log2(float(fmax_hz))
+    pos = (np.log2(freq) - lo) / (hi - lo + 1e-12)
+    bin_idx = int(np.clip(pos * (CREPE_N_BINS - 1), 0.0, CREPE_N_BINS - 1.0))
+    return bin_idx
+
 # Import from existing code
 from generate_crepe_data import (
     CREPE_FS,
     CREPE_FRAME_LENGTH,
     generate_dirac_comb_signal,
     add_complex_noise,
-    hz_to_crepe_bin
 )
 
 
@@ -243,7 +259,7 @@ def generate_25mhz_case_dataset(
     iq_dict = {}
     for frame_idx in tqdm(range(n_input_frames), desc=f"Case-{case.upper()} frames"):
         f_h = float(fh_values[frame_idx])
-        bin_idx = hz_to_crepe_bin(f_h)
+        bin_idx = freq_to_model_bin(f_h, f_min, f_max)
 
         clean_signal = generate_dirac_comb_signal(
             F_h=f_h,
@@ -271,7 +287,7 @@ def generate_25mhz_case_dataset(
     with open(output_path, 'wb') as file:
         pickle.dump(iq_dict, file)
 
-    print(f"\n✓ Saved {len(iq_dict):,} samples to {output_path}")
+    print(f"\n[OK] Saved {len(iq_dict):,} samples to {output_path}")
     return iq_dict
 
 
@@ -292,7 +308,7 @@ def run_gpu_quality_check(
     local_noise_rng = np.random.default_rng(2027)
 
     if case.upper() == 'A':
-        f_min, f_max, duration = 800e3, 1e6, 0.01
+        f_min, f_max, duration = 80e3, 1e6, 0.01
     elif case.upper() == 'B':
         f_min, f_max, duration = 3.2e3, 100e3, 0.01
     else:
@@ -426,7 +442,7 @@ def generate_continuous_dataset(
         f_h = Fh_values[frame_idx]
         
         # Convert to CREPE bin for the label
-        bin_idx = hz_to_crepe_bin(f_h)
+        bin_idx = freq_to_model_bin(f_h, f_min, f_max)
         
         # Generate clean signal
         clean_signal = generate_dirac_comb_signal(
@@ -453,20 +469,26 @@ def generate_continuous_dataset(
     with open(output_path, 'wb') as f:
         pickle.dump(iq_dict, f)
     
-    print(f"\n✓ Saved {len(iq_dict):,} samples to {output_path}")
+    print(f"\n[OK] Saved {len(iq_dict):,} samples to {output_path}")
     
-    # Statistics - extract f_h values from keys
+    # Statistics - extract f_h values and bins from keys
     fh_values = []
+    bin_values = []
     for k in iq_dict.keys():
         # Extract FH value from key
         parts = k.split('_')
         fh_idx = parts.index('FH') + 1
         fh_values.append(float(parts[fh_idx]))
+        # Extract BIN value from key
+        bin_idx = parts.index('BIN') + 1
+        bin_values.append(int(parts[bin_idx]))
     
     unique_fh = len(set(fh_values))
+    unique_bins = len(set(bin_values))
     print(f"\nDataset statistics:")
     print(f"  Unique f_h values: {unique_fh}")
     print(f"  f_h range: {min(fh_values):.1f} Hz - {max(fh_values):.1f} Hz")
+    print(f"  Unique bins: {unique_bins}")
     print(f"  Input frames: {n_input_frames:,}")
     print(f"  SNR levels: {n_snr}")
     print(f"  Total samples: {len(iq_dict):,}")
@@ -548,23 +570,23 @@ def save_dataset_info(output_path: str, iq_dict: dict, case: str, params: dict) 
         f.write(f"  Info file: {info_path}\n")
         f.write("=" * 80 + "\n")
     
-    print(f"✓ Dataset info saved to {info_path}")
+    print(f"[OK] Dataset info saved to {info_path}")
 
 # ...existing code...
 
-def _case_defaults(case: str, n_input_frames: int, use_gpu: bool):
+def _case_defaults(case: str, n_input_frames: int, use_gpu: bool, date_tag: str = ''):
     case_u = case.upper()
     if case_u == 'A':
         params = {
             'fs_raw': 25e6,
             'capture_duration_s': 0.01,
-            'f_min': 800e3,
+            'f_min': 80e3,
             'f_max': 1e6,
             'n_input_frames': n_input_frames,
             'duty_cycle': 0.5,
             'use_gpu': use_gpu,
         }
-        filename = 'iq_dict_caseA_25MHz(23-3-26).pkl'
+        filename = f'iq_dict_caseA_25MHz_{date_tag}.pkl' if date_tag else 'iq_dict_caseA_25MHz(4-4-26).pkl'
     elif case_u == 'B':
         params = {
             'fs_raw': 25e6,
@@ -575,7 +597,7 @@ def _case_defaults(case: str, n_input_frames: int, use_gpu: bool):
             'duty_cycle': 0.5,
             'use_gpu': use_gpu,
         }
-        filename = 'iq_dict_caseB_25MHz(23-3-26).pkl'
+        filename = f'iq_dict_caseB_25MHz_{date_tag}.pkl' if date_tag else 'iq_dict_caseB_25MHz(4-4-26).pkl'
     elif case_u == 'C':
         params = {
             'fs_raw': 25e6,
@@ -586,15 +608,15 @@ def _case_defaults(case: str, n_input_frames: int, use_gpu: bool):
             'duty_cycle': 0.5,
             'use_gpu': use_gpu,
         }
-        filename = 'iq_dict_caseC_25MHz(23-3-26).pkl'
+        filename = f'iq_dict_caseC_25MHz_{date_tag}.pkl' if date_tag else 'iq_dict_caseC_25MHz(4-4-26).pkl'
     else:
         raise ValueError(f"Unsupported case: {case}")
 
     return params, list(range(-10, 21)), filename
 
 
-def _run_single_case(case: str, output_dir: str, n_input_frames: int, use_gpu: bool):
-    params, snr_list, filename = _case_defaults(case, n_input_frames, use_gpu)
+def _run_single_case(case: str, output_dir: str, n_input_frames: int, use_gpu: bool, date_tag: str = ''):
+    params, snr_list, filename = _case_defaults(case, n_input_frames, use_gpu, date_tag)
     output_path = os.path.join(output_dir, filename)
     iq_dict = generate_25mhz_case_dataset(
         output_path=output_path,
@@ -610,6 +632,7 @@ if __name__ == "__main__":
     parser.add_argument('--case', type=str, default='ALL', choices=['A', 'B', 'C', 'ALL'])
     parser.add_argument('--output_dir', type=str, default='./results/')
     parser.add_argument('--n_input_frames', type=int, default=33333)
+    parser.add_argument('--date_tag', type=str, default='')
     parser.add_argument('--backend', type=str, default='auto', choices=['auto', 'cpu', 'gpu'])
     parser.add_argument('--quality_check', action='store_true')
     args = parser.parse_args()
@@ -635,6 +658,6 @@ if __name__ == "__main__":
 
     if args.case == 'ALL':
         for case_name in ['A', 'B', 'C']:
-            _run_single_case(case_name, output_dir, args.n_input_frames, use_gpu)
+            _run_single_case(case_name, output_dir, args.n_input_frames, use_gpu, args.date_tag)
     else:
-        _run_single_case(args.case, output_dir, args.n_input_frames, use_gpu)
+        _run_single_case(args.case, output_dir, args.n_input_frames, use_gpu, args.date_tag)

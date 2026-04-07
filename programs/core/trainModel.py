@@ -33,7 +33,7 @@ CREPE_CENTS_PER_BIN = 20
 DEFAULT_RF_FMIN = 32.7
 DEFAULT_RF_FMAX = 2069.0
 CASE_RF_RANGES = {
-    'A': (800e3, 1e6),
+    'A': (80e3, 1e6),
     'B': (3.2e3, 100e3),
     'C': (32.0, 4e3),
 }
@@ -88,6 +88,31 @@ def parse_key(key: str) -> Tuple[int, int, float]:
     else:
         f_h = None
     return bin_idx, snr, f_h
+
+
+def _fftshift_frame(
+    signal_in: np.ndarray,
+    target_length: int = CREPE_FRAME_LENGTH,
+) -> np.ndarray:
+    x = np.asarray(signal_in)
+    if np.iscomplexobj(x):
+        x = np.abs(x)
+    x = x.astype(np.float32)
+
+    if len(x) < target_length:
+        pad_total = target_length - len(x)
+        pad_left = pad_total // 2
+        pad_right = pad_total - pad_left
+        frame = np.pad(x, (pad_left, pad_right), mode='constant')
+    elif len(x) > target_length:
+        start = (len(x) - target_length) // 2
+        frame = x[start:start + target_length]
+    else:
+        frame = x
+
+    frame = np.fft.fftshift(frame).astype(np.float32)
+    frame /= (np.max(np.abs(frame)) + 1e-8)
+    return frame
 # =============================================================================
 # Dataset
 # =============================================================================
@@ -111,6 +136,7 @@ class CREPEDataset(Dataset):
         gaussian_sigma: float = 25.0,
         rf_fmin: float = DEFAULT_RF_FMIN,
         rf_fmax: float = DEFAULT_RF_FMAX,
+        input_feature: str = 'raw',
     ):
         """
         Args:
@@ -125,6 +151,9 @@ class CREPEDataset(Dataset):
         self.gaussian_sigma_bins = max(float(gaussian_sigma) / float(CREPE_CENTS_PER_BIN), 1e-6)
         self.rf_fmin = float(rf_fmin)
         self.rf_fmax = float(rf_fmax)
+        self.input_feature = str(input_feature).lower()
+        if self.input_feature not in ('raw', 'fftshift'):
+            raise ValueError(f"Unsupported input_feature: {input_feature}. Use 'raw' or 'fftshift'.")
         
         # Filter samples based on bin and SNR
         self.samples = []
@@ -150,7 +179,7 @@ class CREPEDataset(Dataset):
             self.samples.append((key, signal))
             self.fh.append(fh)
         
-        print(f"✓ Created dataset with {len(self.samples)} samples")
+        print(f"[OK] Created dataset with {len(self.samples)} samples")
         # if len(self.samples) > 0:
         #     unique_bins = sorted(list(set(self.labels)))
         #     print(f"  Unique bins: {len(unique_bins)} "
@@ -166,17 +195,23 @@ class CREPEDataset(Dataset):
         fh = self.fh[idx]
 
         signal = np.asarray(signal)
-        if np.iscomplexobj(signal):
-            signal = np.abs(signal)
-        signal = signal.astype(np.float32)
-
-        if len(signal) < self.target_length:
-            signal = np.pad(signal, (0, self.target_length - len(signal)))
+        if self.input_feature == 'fftshift':
+            signal = _fftshift_frame(
+                signal_in=signal,
+                target_length=self.target_length,
+            )
         else:
-            signal = signal[:self.target_length]
-        
-        # Normalize
-        signal = signal / (np.max(np.abs(signal)) + 1e-8)
+            if np.iscomplexobj(signal):
+                signal = np.abs(signal)
+            signal = signal.astype(np.float32)
+
+            if len(signal) < self.target_length:
+                signal = np.pad(signal, (0, self.target_length - len(signal)))
+            else:
+                signal = signal[:self.target_length]
+            
+            # Normalize
+            signal = signal / (np.max(np.abs(signal)) + 1e-8)
         
         # Create Gaussian-smoothed label
         label = self._create_gaussian_label(fh)
@@ -442,16 +477,18 @@ def train_epoch(model, dataloader, criterion, optimizer, device, epoch):
 def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Train CREPE model with configurable SNR range')
-    parser.add_argument('--data_path', type=str, default='./IQData/iq_dict_continuous_freq_SNR15_20-18-3-26.pkl',
+    parser.add_argument('--data_path', type=str, default='C:\\Users\\User1\\Downloads\\Emanation\\Results\\iq_dict_caseA_25MHz(4-4-26).pkl',
                         help='Path to training dataset pickle')
     parser.add_argument('--save_dir', type=str, default='./models_crepe/',
                         help='Directory to save checkpoints/results')
     parser.add_argument('--case', type=str, default='AUTO', choices=['AUTO', 'A', 'B', 'C'])
     parser.add_argument('--rf_fmin', type=float, default=None)
     parser.add_argument('--rf_fmax', type=float, default=None)
-    parser.add_argument('--snr_min', type=int, default=-10, help='Minimum SNR (default: -10)')
-    parser.add_argument('--snr_max', type=int, default=20, help='Maximum SNR (default: 20)')
+    parser.add_argument('--snr_min', type=int, default=-6, help='Minimum SNR (default: -10)')
+    parser.add_argument('--snr_max', type=int, default=-10, help='Maximum SNR (default: 20)')
     parser.add_argument('--model_suffix', type=str, default='snr_15_20(18-3)', help='Suffix for model files')
+    parser.add_argument('--input_feature', type=str, default='raw', choices=['raw', 'fftshift'],
+                        help='Input feature for CNN: raw (existing behavior) or fftshift (test-2 mode)')
     parser.add_argument('--batch_size', type=int, default=64, help='Batch size')
     parser.add_argument('--epochs', type=int, default=30, help='Max training epochs')
     parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
@@ -487,6 +524,7 @@ def main():
         'rf_range_source': rf_range_source,
         'snr_range': (args.snr_min, args.snr_max),
         'model_suffix': args.model_suffix,
+        'input_feature': args.input_feature,
     }
     
     print("=" * 80)
@@ -500,11 +538,11 @@ def main():
     print(f"\n📂 Loading data from {config['data_path']}...")
     with open(config['data_path'], 'rb') as f:
         iq_dict = pickle.load(f)
-    print(f"✓ Loaded {len(iq_dict)} samples")
+    print(f"[OK] Loaded {len(iq_dict)} samples")
     
     # Extract all pitch bins from dataset
     all_bins = sorted(list(set([int(k.split('_')[1]) for k in iq_dict.keys()])))
-    print(f"✓ Found {len(all_bins)} unique bins (range: {min(all_bins)}-{max(all_bins)})")
+    print(f"[OK] Found {len(all_bins)} unique bins (range: {min(all_bins)}-{max(all_bins)})")
     
     # # Split bins with OVERLAP - 60/20/20 split
     # # Interspersed to ensure coverage across frequency range
@@ -517,11 +555,17 @@ def main():
     all_frames = list(iq_dict.keys())
     print(f"found {len(all_frames)} frames")
 
-    # Random train/val/test split using sklearn (40/20/40)
-    train_frames, temp_frames = train_test_split(all_frames, test_size=0.6, random_state=42)  # 40% train, 60% temp
-    val_frames, test_frames = train_test_split(temp_frames, test_size=2/3, random_state=42)   # 20% val, 40% test
-    
-    print(f"\n📊 Train/Val/Test split (Random 40/20/40):")
+    # Use 60/20/20 split for Case C, standard 5/5/90 split otherwise
+    if case_arg.upper() == 'C':
+        train_temp, test_frames = train_test_split(all_frames, test_size=0.2, random_state=42)
+        train_frames, val_frames = train_test_split(train_temp, test_size=0.25, random_state=42)
+        split_name = "60/20/20"
+    else:
+        train_frames, temp_frames = train_test_split(all_frames, test_size=0.8, random_state=42)
+        val_frames, test_frames = train_test_split(temp_frames, test_size=7/8, random_state=42)
+        split_name = "5/5/90"
+
+    print(f"\n📊 Train/Val/Test split (Random {split_name}):")
     print(f"  Train frames: {len(train_frames)} ({100*len(train_frames)/len(all_frames):.0f}%)")
     print(f"  Val frames: {len(val_frames)} ({100*len(val_frames)/len(all_frames):.0f}%)")
     print(f"  Test frames: {len(test_frames)} ({100*len(test_frames)/len(all_frames):.0f}%)")
@@ -540,6 +584,7 @@ def main():
         gaussian_sigma=config['gaussian_sigma'],
         rf_fmin=config['rf_fmin'],
         rf_fmax=config['rf_fmax'],
+        input_feature=config['input_feature'],
     )
     
     val_dataset = CREPEDataset(
@@ -549,6 +594,7 @@ def main():
         gaussian_sigma=config['gaussian_sigma'],
         rf_fmin=config['rf_fmin'],
         rf_fmax=config['rf_fmax'],
+        input_feature=config['input_feature'],
     )
     
     train_loader = DataLoader(train_dataset, batch_size=config['batch_size'], 
@@ -563,7 +609,7 @@ def main():
     
     # Count parameters
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"✓ Model created: {n_params:,} trainable parameters")
+    print(f"[OK] Model created: {n_params:,} trainable parameters")
     
     # Loss and optimizer (as per paper)
     criterion = nn.BCEWithLogitsLoss()
@@ -662,7 +708,7 @@ def main():
                 'val_loss': val_loss,
                 'config': config,
             }, os.path.join(config['save_dir'], f"crepe_best_{config['model_suffix']}.pth"))
-            print(f"✓ Saved best model (Val Loss: {val_loss:.6f})")
+            print(f"[OK] Saved best model (Val Loss: {val_loss:.6f})")
         else:
             patience_counter += 1
             print(f"⏳ No improvement for {patience_counter} epochs (best val loss: {best_val_loss:.6f} at epoch {best_epoch})")
@@ -719,7 +765,7 @@ def main():
     plt.close()
     
     print("\n" + "=" * 80)
-    print("✓ Training complete!")
+    print("[OK] Training complete!")
     print("=" * 80)
     print(f"\nBest validation loss: {best_val_loss:.6f}")
     print(f"Models saved to: {config['save_dir']}")

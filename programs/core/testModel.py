@@ -23,7 +23,7 @@ CREPE_CENTS_PER_BIN = 20
 DEFAULT_RF_FMIN = 32.7
 DEFAULT_RF_FMAX = 2069.0
 CASE_RF_RANGES = {
-    'A': (800e3, 1e6),
+    'A': (80e3, 1e6),
     'B': (3.2e3, 100e3),
     'C': (32.0, 4e3),
 }
@@ -80,6 +80,25 @@ def parse_key(key: str) -> Tuple[int, int, float]:
     return bin_idx, snr, f_h
 
 
+def _fftshift_frame(signal_in: np.ndarray, target_length: int = CREPE_FRAME_LENGTH) -> np.ndarray:
+    signal = np.asarray(signal_in)
+    if np.iscomplexobj(signal):
+        signal = np.abs(signal)
+    signal = signal.astype(np.float32)
+
+    if len(signal) < target_length:
+        pad_total = target_length - len(signal)
+        pad_left = pad_total // 2
+        pad_right = pad_total - pad_left
+        signal = np.pad(signal, (pad_left, pad_right), mode='constant')
+    else:
+        signal = signal[:target_length]
+
+    signal = np.fft.fftshift(signal).astype(np.float32)
+    signal = signal / (np.max(np.abs(signal)) + 1e-8)
+    return signal
+
+
 class CREPEDataset(Dataset):
     def __init__(
         self,
@@ -88,6 +107,7 @@ class CREPEDataset(Dataset):
         gaussian_sigma_cents: float,
         rf_fmin: float,
         rf_fmax: float,
+        input_feature: str,
         target_length: int = CREPE_FRAME_LENGTH,
     ):
         self.target_length = target_length
@@ -95,6 +115,9 @@ class CREPEDataset(Dataset):
         self.gaussian_sigma_bins = max(float(gaussian_sigma_cents) / float(CREPE_CENTS_PER_BIN), 1e-6)
         self.rf_fmin = float(rf_fmin)
         self.rf_fmax = float(rf_fmax)
+        self.input_feature = str(input_feature).lower()
+        if self.input_feature not in ('raw', 'fftshift'):
+            raise ValueError(f"Unsupported input_feature: {input_feature}. Use 'raw' or 'fftshift'.")
         self.samples = []
         self.fh_values = []
 
@@ -107,7 +130,7 @@ class CREPEDataset(Dataset):
             self.samples.append((key, signal))
             self.fh_values.append(f_h)
 
-        print(f"✓ Created dataset with {len(self.samples)} samples")
+        print(f"[OK] Created dataset with {len(self.samples)} samples")
         if self.samples:
             print(f"  f_h range: {min(self.fh_values):.1f} Hz to {max(self.fh_values):.1f} Hz")
 
@@ -118,13 +141,15 @@ class CREPEDataset(Dataset):
         _, signal = self.samples[idx]
         f_h = self.fh_values[idx]
 
-        signal = np.abs(signal)
-        if len(signal) < self.target_length:
-            signal = np.pad(signal, (0, self.target_length - len(signal)))
+        if self.input_feature == 'fftshift':
+            signal = _fftshift_frame(signal, self.target_length)
         else:
-            signal = signal[:self.target_length]
-
-        signal = signal / (np.max(np.abs(signal)) + 1e-8)
+            signal = np.abs(signal)
+            if len(signal) < self.target_length:
+                signal = np.pad(signal, (0, self.target_length - len(signal)))
+            else:
+                signal = signal[:self.target_length]
+            signal = signal / (np.max(np.abs(signal)) + 1e-8)
         label = self._create_gaussian_label(f_h)
 
         return torch.FloatTensor(signal).unsqueeze(0), torch.FloatTensor(label), torch.tensor(f_h, dtype=torch.float32)
@@ -209,9 +234,9 @@ def evaluate_continuous(config, test_dataset, device):
     model.eval()
 
     if 'val_loss' in checkpoint:
-        print(f"✓ Loaded epoch {checkpoint.get('epoch', 'N/A')} (val loss: {checkpoint['val_loss']:.6f})")
+        print(f"[OK] Loaded epoch {checkpoint.get('epoch', 'N/A')} (val loss: {checkpoint['val_loss']:.6f})")
     else:
-        print(f"✓ Loaded epoch {checkpoint.get('epoch', 'N/A')}")
+        print(f"[OK] Loaded epoch {checkpoint.get('epoch', 'N/A')}")
 
     test_loader = DataLoader(test_dataset, batch_size=config['batch_size'], shuffle=False, num_workers=0)
     criterion = nn.BCEWithLogitsLoss()
@@ -302,6 +327,7 @@ def main():
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--dropout', type=float, default=0.25)
     parser.add_argument('--gaussian_sigma_cents', type=float, default=25.0)
+    parser.add_argument('--input_feature', type=str, default='raw', choices=['raw', 'fftshift'])
     args = parser.parse_args()
 
     case_arg = '' if args.case == 'AUTO' else args.case
@@ -320,6 +346,7 @@ def main():
         'batch_size': args.batch_size,
         'dropout': args.dropout,
         'gaussian_sigma_cents': args.gaussian_sigma_cents,
+        'input_feature': args.input_feature,
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
     }
 
@@ -331,13 +358,13 @@ def main():
 
     with open(config['data_path'], 'rb') as f:
         iq_dict = pickle.load(f)
-    print(f"\n✓ Loaded {len(iq_dict)} total samples")
+    print(f"\n[OK] Loaded {len(iq_dict)} total samples")
 
     all_frames = list(iq_dict.keys())
-    _, temp_frames = train_test_split(all_frames, test_size=0.6, random_state=42)
-    _, test_frames = train_test_split(temp_frames, test_size=2/3, random_state=42)
+    _, test_temp = train_test_split(all_frames, test_size=0.4, random_state=42)  # 40% remaining
+    _ , test_frames = train_test_split(test_temp, test_size=0.5, random_state=42)  # 50% of that = 20% total
     test_iq_dict = {k: iq_dict[k] for k in test_frames}
-    print(f"✓ Test frames: {len(test_frames)} ({100 * len(test_frames) / len(all_frames):.0f}%) [40/20/40 split]")
+    print(f"[OK] Test frames: {len(test_frames)} ({100 * len(test_frames) / len(all_frames):.0f}%) [40/20/40 split]")
 
     test_dataset = CREPEDataset(
         iq_dict=test_iq_dict,
@@ -345,12 +372,13 @@ def main():
         gaussian_sigma_cents=config['gaussian_sigma_cents'],
         rf_fmin=config['rf_fmin'],
         rf_fmax=config['rf_fmax'],
+        input_feature=config['input_feature'],
     )
 
     evaluate_continuous(config, test_dataset, device=config['device'])
 
     print("\n" + "=" * 80)
-    print("✓ Continuous test evaluation complete")
+    print("[OK] Continuous test evaluation complete")
     print("=" * 80)
 
 
