@@ -23,17 +23,18 @@ CREPE_CENTS_PER_BIN = 20
 DEFAULT_RF_FMIN = 32.7
 DEFAULT_RF_FMAX = 2069.0
 CASE_RF_RANGES = {
-    'A': (80e3, 1e6),
-    'B': (3.2e3, 100e3),
-    'C': (32.0, 4e3),
+    '1': (80e3, 2.5e6),
+    '2': (30.0, 1e3),
+    '3': (1e3, 33e3),
+    '4': (33e3, 100e3),
 }
 
 
 def _infer_case_from_path(data_path: str) -> Optional[str]:
     lower_path = os.path.basename(data_path).lower()
-    for case in ('a', 'b', 'c'):
-        if f"case{case}" in lower_path:
-            return case.upper()
+    for case in ('1', '2', '3', '4'):
+        if f"case{case}" in lower_path or f"case_{case}" in lower_path:
+            return case
     return None
 
 
@@ -319,7 +320,7 @@ def main():
     parser.add_argument('--data_path', type=str, default=r'C:\Users\User1\Downloads\Emanation\IQData\iq_dict_continuous_freq_SNR0_20_continous.pkl')
     parser.add_argument('--save_dir', type=str, default='./models_crepe/')
     parser.add_argument('--model_suffix', type=str, default='snr_neg20_20(20-3)')
-    parser.add_argument('--case', type=str, default='AUTO', choices=['AUTO', 'A', 'B', 'C'])
+    parser.add_argument('--case', type=str, default='AUTO', choices=['AUTO', '1', '2', '3', '4'])
     parser.add_argument('--rf_fmin', type=float, default=None)
     parser.add_argument('--rf_fmax', type=float, default=None)
     parser.add_argument('--snr_min', type=int, default=-10)

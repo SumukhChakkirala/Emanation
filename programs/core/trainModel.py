@@ -33,17 +33,18 @@ CREPE_CENTS_PER_BIN = 20
 DEFAULT_RF_FMIN = 32.7
 DEFAULT_RF_FMAX = 2069.0
 CASE_RF_RANGES = {
-    'A': (80e3, 1e6),
-    'B': (3.2e3, 100e3),
-    'C': (32.0, 4e3),
+    '1': (80e3, 2.5e6),
+    '2': (30.0, 1e3),
+    '3': (1e3, 33e3),
+    '4': (33e3, 100e3),
 }
 
 
 def _infer_case_from_path(data_path: str) -> Optional[str]:
     lower_path = os.path.basename(data_path).lower()
-    for case in ('a', 'b', 'c'):
-        if f"case{case}" in lower_path:
-            return case.upper()
+    for case in ('1', '2', '3', '4'):
+        if f"case{case}" in lower_path or f"case_{case}" in lower_path:
+            return case
     return None
 
 
@@ -477,11 +478,11 @@ def train_epoch(model, dataloader, criterion, optimizer, device, epoch):
 def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Train CREPE model with configurable SNR range')
-    parser.add_argument('--data_path', type=str, default='C:\\Users\\User1\\Downloads\\Emanation\\Results\\iq_dict_caseA_25MHz(4-4-26).pkl',
+    parser.add_argument('--data_path', type=str, default='C:\\Users\\User1\\Downloads\\Emanation\\Results\\iq_dict_case1.pkl',
                         help='Path to training dataset pickle')
     parser.add_argument('--save_dir', type=str, default='./models_crepe/',
                         help='Directory to save checkpoints/results')
-    parser.add_argument('--case', type=str, default='AUTO', choices=['AUTO', 'A', 'B', 'C'])
+    parser.add_argument('--case', type=str, default='AUTO', choices=['AUTO', '1', '2', '3', '4'])
     parser.add_argument('--rf_fmin', type=float, default=None)
     parser.add_argument('--rf_fmax', type=float, default=None)
     parser.add_argument('--snr_min', type=int, default=-6, help='Minimum SNR (default: -10)')
@@ -555,8 +556,8 @@ def main():
     all_frames = list(iq_dict.keys())
     print(f"found {len(all_frames)} frames")
 
-    # Use 60/20/20 split for Case C, standard 5/5/90 split otherwise
-    if case_arg.upper() == 'C':
+    # Use 60/20/20 split for Case 2 (lowest-range), standard 5/5/90 split otherwise
+    if case_arg == '2':
         train_temp, test_frames = train_test_split(all_frames, test_size=0.2, random_state=42)
         train_frames, val_frames = train_test_split(train_temp, test_size=0.25, random_state=42)
         split_name = "60/20/20"
