@@ -1,0 +1,30 @@
+================================================================================
+DATASET: Unified Case 3
+================================================================================
+
+CASE PARAMETERS (notes, beta=10, Nc=1024, constant=3.2):
+  [f1, f2]       = [1000.0, 33000.0] Hz
+  fs_native      = 25.0 MHz
+  fs_i formula   = Nc * f1 / 3.2 = 320000.0 Hz
+  D              = 81
+  fs_eff         = 306910.0 Hz
+  N_raw          = 250000
+  ND             = 3086
+  Nz             = 1010  [(ND+Nz) % Nc = 0]
+  (ND+Nz)/Nc     = 4  non-overlapping Welch slices
+
+CHANNEL PIPELINE:
+  clean signal -> ETU70 fading -> CFO -> phase offset -> AWGN
+
+FEATURE PIPELINE:
+  1. Decimate by D=81 (LPF cutoff=154321.0 Hz, Kaiser beta=10)
+  2. s[n] = |x[n]|^2 - mean  [DC removed]
+  3. Zero-pad 1010 zeros  [total length = 4096]
+  4. Welch PSD (nperseg=1024, noverlap=512, Kaiser beta=10, nfft=1024)
+  5. Interpolate 513 -> 1024 bins
+  6. Normalize to [0, 1]
+
+SNR levels: [-10, -9, -8, -7, -6, -5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+Total samples: 310
+Output pickle: C:\Users\veidp\Desktop\Reserch Papers\Pitich Estimation\Emanation\programs\Testing\iq_dict_case3_withdec_10frames.pkl
+================================================================================
