@@ -61,6 +61,15 @@ except Exception:
     csignal = None
     GPU_AVAILABLE = False
 
+try:
+    from gnuradio import gr, blocks, channels
+    GR_AVAILABLE = True
+except Exception:
+    gr = None
+    blocks = None
+    channels = None
+    GR_AVAILABLE = False
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Clock / channel parameters (unchanged from original)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -83,8 +92,13 @@ _ETU70_delays_ns = [0, 50, 120, 200, 230, 500, 1600, 2300, 5000]
 _ETU70_mags_dB   = [-1, -1, -1,   0,   0,   0,   -3,   -5,   -7]
 _ETU70_mags      = [10 ** (m / 20.0) for m in _ETU70_mags_dB]
 _ETU70_fD        = 70
+_NUM_SINUSOIDS   = 8
+_NTAPS           = 8
 _LOS             = False
 _KFACTOR         = 4
+
+# Easy channel switch: 'gnuradio', 'numpy', or 'auto'.
+CHANNEL_FADING_BACKEND = 'gnuradio'
 
 from artifacts import CFOArtifact, phaseOffset
 
@@ -189,11 +203,66 @@ def _etu70_fading_numpy(samples: np.ndarray, samp_rate: float, rng=None, seed=No
     return y
 
 
+def _etu70_fading_gnuradio(samples: np.ndarray, samp_rate: float, seed: int) -> np.ndarray:
+    """ETU70 fading using GNU Radio selective_fading_model."""
+    if not GR_AVAILABLE:
+        raise RuntimeError('GNU Radio is not available in this environment.')
+
+    delays = [d * 1e-9 * float(samp_rate) for d in _ETU70_delays_ns]
+    fading_block = channels.selective_fading_model(
+        _NUM_SINUSOIDS,
+        _ETU70_fD / float(samp_rate),
+        _LOS,
+        _KFACTOR,
+        int(seed),
+        delays,
+        _ETU70_mags,
+        _NTAPS,
+    )
+    src = blocks.vector_source_c(np.asarray(samples, dtype=np.complex64).tolist(), False, 1, [])
+    snk = blocks.vector_sink_c()
+    tb = gr.top_block()
+    tb.connect(src, fading_block, snk)
+    tb.run()
+    return np.asarray(snk.data(), dtype=np.complex64)
+
+
+def _etu70_fading(
+    samples: np.ndarray,
+    samp_rate: float,
+    rng: np.random.Generator = None,
+    seed: int = None,
+    backend: str = CHANNEL_FADING_BACKEND,
+) -> np.ndarray:
+    """Select ETU70 fading backend while keeping both implementations available."""
+    if seed is None:
+        if rng is not None:
+            seed = int(rng.integers(0, np.iinfo(np.int32).max))
+        else:
+            seed = 0
+
+    selected = str(backend).lower()
+    if selected == 'auto':
+        selected = 'gnuradio' if GR_AVAILABLE else 'numpy'
+
+    if selected == 'gnuradio':
+        if GR_AVAILABLE:
+            return _etu70_fading_gnuradio(samples, samp_rate, seed)
+        print('[WARN] GNU Radio not available; falling back to NumPy/SciPy ETU70 approximation.')
+        return _etu70_fading_numpy(samples, samp_rate, rng=rng, seed=seed)
+
+    if selected == 'numpy':
+        return _etu70_fading_numpy(samples, samp_rate, rng=rng, seed=seed)
+
+    raise ValueError(f"Unsupported fading backend '{backend}'. Use 'gnuradio', 'numpy', or 'auto'.")
+
+
 def apply_channel_pipeline(
     clean_signal: np.ndarray,
     samp_rate:    float,
     rng:          np.random.Generator = None,
     seed:         int = None,
+    fading_backend: str = CHANNEL_FADING_BACKEND,
 ) -> np.ndarray:
     """clean -> ETU70 -> CFO -> phase offset.  AWGN is added per-SNR later."""
     XO_val_len   = len(clean_signal) + 10
@@ -215,7 +284,13 @@ def apply_channel_pipeline(
               (XO_val[i] < -clockeffects_dict['XO_maxdeviation']):
             XO_val[i] = clockeffects_dict['XO_standardDeviation'] * rng.standard_normal() + XO_val[i - 1]
 
-    samples_faded = _etu70_fading_numpy(clean_signal, samp_rate, rng=rng)
+    samples_faded = _etu70_fading(
+        clean_signal,
+        samp_rate,
+        rng=rng,
+        seed=seed,
+        backend=fading_backend,
+    )
     samples_cfo   = CFOArtifact(samples_faded, XO_val, clockeffects_dict, samp_rate)
     samples_phase = phaseOffset(samples_cfo, rng=rng)
     return np.asarray(samples_phase, dtype=np.complex64)
@@ -668,6 +743,7 @@ Examples:
         use_gpu = GPU_AVAILABLE
 
     print(f"CuPy available  : {GPU_AVAILABLE}")
+    print(f"GNU Radio available : {GR_AVAILABLE}  {'✓ USING FOR ETU70 FADING' if GR_AVAILABLE else '✗ Will use NumPy/SciPy'}")
     print(f"Backend         : {'GPU(CuPy)' if use_gpu else 'CPU(SciPy)'}")
     print(f"Mode            : {'no-decimation (OR)' if args.no_decimation else 'decimated'}")
     print(f"Workers         : {args.n_workers or mp.cpu_count()}")
