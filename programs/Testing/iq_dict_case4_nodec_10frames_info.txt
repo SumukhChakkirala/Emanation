@@ -1,0 +1,29 @@
+================================================================================
+DATASET: Unified Case 4  [no-decimation / OR mode]
+================================================================================
+
+CASE PARAMETERS (notes, beta=10, Nc=1024, constant=3.2):
+  [f1, f2]       = [33000.0, 100000.0] Hz
+  fs_native      = 25.0 MHz
+  D              = 1  (no-decimation OR mode)
+  fs_eff         = 25000000.0 Hz
+  N_raw          = 250000
+  ND             = 250000
+  Nz             = 880  [(ND+Nz) % Nc = 0]
+  (ND+Nz)/Nc     = 245  non-overlapping Welch slices
+
+CHANNEL PIPELINE:
+  clean signal -> ETU70 fading -> CFO -> phase offset -> AWGN
+
+FEATURE PIPELINE:
+  1. [NO decimation - OR mode, raw 25 MHz samples used directly]
+  2. s[n] = |x[n]|^2 - mean  [DC removed]
+  3. Zero-pad 880 zeros  [total length = 250880]
+  4. Welch PSD (nperseg=1024, noverlap=512, Kaiser beta=10, nfft=1024)
+  5. Interpolate 513 -> 1024 bins
+  6. Normalize to [0, 1]
+
+SNR levels: [-10, -9, -8, -7, -6, -5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+Total samples: 310
+Output pickle: C:\Users\veidp\Desktop\Reserch Papers\Pitich Estimation\Emanation\programs\Testing\iq_dict_case4_nodec_10frames.pkl
+================================================================================
