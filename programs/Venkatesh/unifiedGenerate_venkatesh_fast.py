@@ -61,6 +61,15 @@ except Exception:
     csignal = None
     GPU_AVAILABLE = False
 
+try:
+    from gnuradio import gr, blocks, channels
+    GR_AVAILABLE = True
+except Exception:
+    gr = None
+    blocks = None
+    channels = None
+    GR_AVAILABLE = False
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Clock / channel parameters (unchanged from original)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -83,8 +92,13 @@ _ETU70_delays_ns = [0, 50, 120, 200, 230, 500, 1600, 2300, 5000]
 _ETU70_mags_dB   = [-1, -1, -1,   0,   0,   0,   -3,   -5,   -7]
 _ETU70_mags      = [10 ** (m / 20.0) for m in _ETU70_mags_dB]
 _ETU70_fD        = 70
+_NUM_SINUSOIDS   = 8
+_NTAPS           = 8
 _LOS             = False
 _KFACTOR         = 4
+
+# Channel fading backend: 'gnuradio', 'numpy', or 'auto'.
+CHANNEL_FADING_BACKEND = 'auto'
 
 from artifacts import CFOArtifact, phaseOffset
 
@@ -189,11 +203,66 @@ def _etu70_fading_numpy(samples: np.ndarray, samp_rate: float, rng=None, seed=No
     return y
 
 
+def _etu70_fading_gnuradio(samples: np.ndarray, samp_rate: float, seed: int) -> np.ndarray:
+    """ETU70 fading using GNU Radio selective_fading_model."""
+    if not GR_AVAILABLE:
+        raise RuntimeError('GNU Radio is not available in this environment.')
+
+    delays = [d * 1e-9 * float(samp_rate) for d in _ETU70_delays_ns]
+    fading_block = channels.selective_fading_model(
+        _NUM_SINUSOIDS,
+        _ETU70_fD / float(samp_rate),
+        _LOS,
+        _KFACTOR,
+        int(seed),
+        delays,
+        _ETU70_mags,
+        _NTAPS,
+    )
+    src = blocks.vector_source_c(np.asarray(samples, dtype=np.complex64).tolist(), False, 1, [])
+    snk = blocks.vector_sink_c()
+    tb = gr.top_block()
+    tb.connect(src, fading_block, snk)
+    tb.run()
+    return np.asarray(snk.data(), dtype=np.complex64)
+
+
+def _etu70_fading(
+    samples: np.ndarray,
+    samp_rate: float,
+    rng: np.random.Generator = None,
+    seed: int = None,
+    backend: str = CHANNEL_FADING_BACKEND,
+) -> np.ndarray:
+    """Select ETU70 fading backend while keeping both implementations available."""
+    if seed is None:
+        if rng is not None:
+            seed = int(rng.integers(0, np.iinfo(np.int32).max))
+        else:
+            seed = 0
+
+    selected = str(backend).lower()
+    if selected == 'auto':
+        selected = 'gnuradio' if GR_AVAILABLE else 'numpy'
+
+    if selected == 'gnuradio':
+        if GR_AVAILABLE:
+            return _etu70_fading_gnuradio(samples, samp_rate, seed)
+        print('[WARN] GNU Radio not available; falling back to NumPy ETU70 approximation.')
+        return _etu70_fading_numpy(samples, samp_rate, rng=rng, seed=seed)
+
+    if selected == 'numpy':
+        return _etu70_fading_numpy(samples, samp_rate, rng=rng, seed=seed)
+
+    raise ValueError(f"Unsupported fading backend '{backend}'. Use 'gnuradio', 'numpy', or 'auto'.")
+
+
 def apply_channel_pipeline(
     clean_signal: np.ndarray,
     samp_rate:    float,
     rng:          np.random.Generator = None,
     seed:         int = None,
+    fading_backend: str = CHANNEL_FADING_BACKEND,
 ) -> np.ndarray:
     """clean -> ETU70 -> CFO -> phase offset.  AWGN is added per-SNR later."""
     XO_val_len   = len(clean_signal) + 10
@@ -215,7 +284,13 @@ def apply_channel_pipeline(
               (XO_val[i] < -clockeffects_dict['XO_maxdeviation']):
             XO_val[i] = clockeffects_dict['XO_standardDeviation'] * rng.standard_normal() + XO_val[i - 1]
 
-    samples_faded = _etu70_fading_numpy(clean_signal, samp_rate, rng=rng)
+    samples_faded = _etu70_fading(
+        clean_signal,
+        samp_rate,
+        rng=rng,
+        seed=seed,
+        backend=fading_backend,
+    )
     samples_cfo   = CFOArtifact(samples_faded, XO_val, clockeffects_dict, samp_rate)
     samples_phase = phaseOffset(samples_cfo, rng=rng)
     return np.asarray(samples_phase, dtype=np.complex64)
@@ -399,7 +474,7 @@ rng       = np.random.default_rng(seed=main_seed)
 
 def process_frame(args):
     """Process a single frame for parallel execution."""
-    frame_idx, f_h, case_idx, snr_list, no_decimation, use_gpu, frame_seed, f1, f2 = args
+    frame_idx, f_h, case_idx, snr_list, no_decimation, use_gpu, frame_seed, f1, f2, fading_backend = args
     bin_idx = freq_to_model_bin(f_h, f1, f2)
     frame_rng = np.random.default_rng(int(frame_seed))
     
@@ -412,6 +487,7 @@ def process_frame(args):
         clean_signal=clean_signal,
         samp_rate=FS_NATIVE,
         rng=frame_rng,
+        fading_backend=fading_backend,
     )
     
     frame_dict = {}
@@ -444,6 +520,7 @@ def generate_unified_case_dataset(
     no_decimation:  bool = False,
     use_gpu:        bool = False,
     n_workers:      int = None,
+    fading_backend: str = CHANNEL_FADING_BACKEND,
 ) -> dict:
     """
     Generate dataset for one case of the unified approach.
@@ -507,6 +584,7 @@ def generate_unified_case_dataset(
     print(f"  channel pipeline:  ETU70 -> CFO -> phase offset -> AWGN")
     print(f"  feature:           |x|^2 - mean -> Welch PSD (nperseg=1024, 50% overlap)")
     print(f"  backend:           {'GPU(CuPy)' if (use_gpu and GPU_AVAILABLE) else 'CPU(SciPy)'}")
+    print(f"  fading backend:    {fading_backend}")
     print(f"  workers:           {n_workers or mp.cpu_count()}")
     print()
 
@@ -514,7 +592,7 @@ def generate_unified_case_dataset(
 
     # Prepare arguments for parallel processing
     args_list = [
-        (frame_idx, float(fh_values[frame_idx]), case_idx, snr_list, no_decimation, use_gpu, int(frame_seeds[frame_idx]), f1, f2)
+        (frame_idx, float(fh_values[frame_idx]), case_idx, snr_list, no_decimation, use_gpu, int(frame_seeds[frame_idx]), f1, f2, fading_backend)
         for frame_idx in range(n_input_frames)
     ]
 
@@ -616,6 +694,7 @@ def _run_single_case(
     no_decimation:  bool = False,
     date_tag:       str  = '',
     n_workers:      int = None,
+    fading_backend: str = CHANNEL_FADING_BACKEND,
 ) -> None:
     suffix   = '_nodec' if no_decimation else '_unified'
     tag      = f'_{date_tag}' if date_tag else suffix
@@ -628,6 +707,7 @@ def _run_single_case(
         no_decimation=no_decimation,
         use_gpu=use_gpu,
         n_workers=n_workers,
+        fading_backend=fading_backend,
     )
     save_dataset_info(out_path, iq_dict, case_idx, no_decimation=no_decimation)
 
@@ -676,6 +756,10 @@ Examples:
         '--n_workers', type=int, default=None,
         help='Number of parallel workers for frame processing (default: CPU count).',
     )
+    parser.add_argument(
+        '--fading_backend', type=str, default='auto', choices=['auto', 'numpy', 'gnuradio'],
+        help='ETU70 fading implementation to use.',
+    )
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -690,7 +774,9 @@ Examples:
         use_gpu = GPU_AVAILABLE
 
     print(f"CuPy available  : {GPU_AVAILABLE}")
+    print(f"GNU Radio available : {GR_AVAILABLE}")
     print(f"Backend         : {'GPU(CuPy)' if use_gpu else 'CPU(SciPy)'}")
+    print(f"Fading backend  : {args.fading_backend}")
     print(f"Mode            : {'no-decimation (OR)' if args.no_decimation else 'decimated'}")
     print(f"Workers         : {args.n_workers or mp.cpu_count()}")
     print()
@@ -705,4 +791,5 @@ Examples:
             no_decimation=args.no_decimation,
             date_tag=args.date_tag,
             n_workers=args.n_workers,
+            fading_backend=args.fading_backend,
         )
