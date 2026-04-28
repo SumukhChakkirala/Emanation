@@ -458,6 +458,7 @@ def generate_unified_case_dataset(
 
     for frame_idx in tqdm(range(n_input_frames), desc=f"Case-{case_idx} [{mode_tag}] frames"):
         f_h     = float(fh_values[frame_idx])
+        print("f_h", f_h)
         bin_idx = freq_to_model_bin(f_h, f1, f2)
         frame_rng = np.random.default_rng(int(frame_seeds[frame_idx]))
 
@@ -465,7 +466,7 @@ def generate_unified_case_dataset(
             F_h=f_h, Fs=FS_NATIVE,
             duration=CAPTURE_DURATION_S, duty_cycle=DUTY_CYCLE,
         )
-
+        print(clean_signal[0:10])
         signal_no_awgn = apply_channel_pipeline(
             clean_signal=clean_signal,
             samp_rate=FS_NATIVE,

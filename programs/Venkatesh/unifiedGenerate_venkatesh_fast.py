@@ -47,6 +47,7 @@ CLI examples:
 import numpy as np
 import pickle
 import os
+import sys
 import argparse
 from tqdm import tqdm
 from scipy import signal
@@ -60,6 +61,8 @@ except Exception:
     cp = None
     csignal = None
     GPU_AVAILABLE = False
+
+from gnuradio import gr, blocks, channels
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Clock / channel parameters (unchanged from original)
@@ -83,8 +86,13 @@ _ETU70_delays_ns = [0, 50, 120, 200, 230, 500, 1600, 2300, 5000]
 _ETU70_mags_dB   = [-1, -1, -1,   0,   0,   0,   -3,   -5,   -7]
 _ETU70_mags      = [10 ** (m / 20.0) for m in _ETU70_mags_dB]
 _ETU70_fD        = 70
+_NUM_SINUSOIDS   = 10
+_NTAPS           = 8
 _LOS             = False
 _KFACTOR         = 4
+
+# Channel fading backend: 'gnuradio', 'numpy', or 'auto'.
+# CHANNEL_FADING_BACKEND = 'auto'
 
 from artifacts import CFOArtifact, phaseOffset
 
@@ -99,7 +107,10 @@ N_RAW              = int(FS_NATIVE * CAPTURE_DURATION_S)   # 250,000
 DUTY_CYCLE         = 0.5
 BETA_KAISER        = 10.0
 NUMTAPS            = 129
-
+N_H = 10 # Number of harmonics assumed needed in a singal capture to be abkle to detect the fundamental frequency.
+# Theoretically there is no requirement on the number of harmonics, but in practise we use 10. This number can be changed as per requirement. 
+FREQ_LL            = 30 # This is the lowest limit of frequency that we detect.
+FREQ_HL            = FS_NATIVE / (2*N_H) # This is the highest limit of frequency that we detect.
 # ─────────────────────────────────────────────────────────────────────────────
 # Case parameters — f1, f2 hardcoded from notes; D, fs_eff calculated
 # fs_i = Nc * f1_i / KAISER_CONSTANT  (beta=10),  D = round(fs_native / fs_i)
@@ -116,12 +127,31 @@ def _compute_case_params(f1: float, f2: float) -> dict:
     # THerefore return fs_i instead of fs_eff.
     return dict(f1=f1, f2=f2, D=D, fs_eff=fs_i)
 
-CASE_PARAMS = {
-    1: _compute_case_params(80e3,   2.5e6),
-    2: _compute_case_params(30.0,   1e3),
-    3: _compute_case_params(1e3,    33e3),
-    4: _compute_case_params(33e3,   100e3),
-}
+# CASE_PARAMS = {
+#     1: _compute_case_params(80e3,   2.5e6),
+#     2: _compute_case_params(30.0,   1e3),
+#     3: _compute_case_params(1e3,    33e3),
+#     4: _compute_case_params(33e3,   100e3),
+# }
+f2 = FS_NATIVE/(2*N_H)
+f1 = KAISER_CONSTANT*FS_NATIVE/CREPE_FRAME_LENGTH
+f1_f2_dict = {}
+CASE_PARAMS = {}
+itr = 1
+CASE_PARAMS[itr] = _compute_case_params(f1, f2)
+# f1_f2_dict_itr = 1
+# f1_f2_dict[f1_f2_dict_itr] = {'fs':FS_NATIVE, 'f1':f1, 'f2':f2}
+while f1 > FREQ_LL:
+    itr = itr + 1
+    fs = f1*2*N_H
+    f2 = f1
+    f1 = KAISER_CONSTANT*fs/CREPE_FRAME_LENGTH
+    if f1 > FREQ_LL:
+        CASE_PARAMS[itr] = _compute_case_params(f1, f2)
+    else:
+        CASE_PARAMS[itr] = _compute_case_params(FREQ_LL, f2)
+        total_cases = itr
+
 
 
 def _compute_nz(ND: int, Nc: int = CREPE_FRAME_LENGTH) -> int:
@@ -165,28 +195,103 @@ def freq_to_model_bin(freq_hz: float, fmin_hz: float, fmax_hz: float) -> int:
 # ─────────────────────────────────────────────────────────────────────────────
 # Channel pipeline
 # ─────────────────────────────────────────────────────────────────────────────
-def _fractional_delay(signal_in: np.ndarray, delay_samples: float) -> np.ndarray:
-    n        = signal_in.shape[0]
-    idx      = np.arange(n, dtype=np.float64) - float(delay_samples)
-    out_real = np.interp(idx, np.arange(n), np.real(signal_in), left=0.0, right=0.0)
-    out_imag = np.interp(idx, np.arange(n), np.imag(signal_in), left=0.0, right=0.0)
-    return (out_real + 1j * out_imag).astype(np.complex64)
+# def _fractional_delay(signal_in: np.ndarray, delay_samples: float) -> np.ndarray:
+#     n        = signal_in.shape[0]
+#     idx      = np.arange(n, dtype=np.float64) - float(delay_samples)
+#     out_real = np.interp(idx, np.arange(n), np.real(signal_in), left=0.0, right=0.0)
+#     out_imag = np.interp(idx, np.arange(n), np.imag(signal_in), left=0.0, right=0.0)
+#     return (out_real + 1j * out_imag).astype(np.complex64)
 
 
-def _etu70_fading_numpy(samples: np.ndarray, samp_rate: float, rng=None, seed=None) -> np.ndarray:
-    x              = np.asarray(samples, dtype=np.complex64)
-    n              = x.shape[0]
-    t              = np.arange(n, dtype=np.float64) / float(samp_rate)
-    delays_samples = [d * 1e-9 * float(samp_rate) for d in _ETU70_delays_ns]
-    if rng is None:
-        rng = np.random.default_rng(int(seed) if seed is not None else None)
-    y              = np.zeros(n, dtype=np.complex64)
-    for delay_samp, mag in zip(delays_samples, _ETU70_mags):
-        x_delayed = _fractional_delay(x, delay_samp)
-        phase0    = rng.uniform(0.0, 2.0 * np.pi)
-        doppler   = np.exp(1j * (2.0 * np.pi * _ETU70_fD * t + phase0)).astype(np.complex64)
-        y        += (mag * x_delayed * doppler).astype(np.complex64)
-    return y
+# def _etu70_fading_numpy(samples: np.ndarray, samp_rate: float, rng=None, seed=None) -> np.ndarray:
+#     x              = np.asarray(samples, dtype=np.complex64)
+#     n              = x.shape[0]
+#     t              = np.arange(n, dtype=np.float64) / float(samp_rate)
+#     delays_samples = [d * 1e-9 * float(samp_rate) for d in _ETU70_delays_ns]
+#     if rng is None:
+#         rng = np.random.default_rng(int(seed) if seed is not None else None)
+#     y              = np.zeros(n, dtype=np.complex64)
+#     for delay_samp, mag in zip(delays_samples, _ETU70_mags):
+#         x_delayed = _fractional_delay(x, delay_samp)
+#         phase0    = rng.uniform(0.0, 2.0 * np.pi)
+#         doppler   = np.exp(1j * (2.0 * np.pi * _ETU70_fD * t + phase0)).astype(np.complex64)
+#         y        += (mag * x_delayed * doppler).astype(np.complex64)
+#     return y
+
+
+def _etu70_fading_gnuradio(samples: np.ndarray, samp_rate: float, seed: int) -> np.ndarray:
+    """ETU70 fading using GNU Radio selective_fading_model."""
+    # if not GR_AVAILABLE:
+    #     raise RuntimeError('GNU Radio is not available in this environment.')
+
+    # delays = [d * 1e-9 * float(samp_rate) for d in _ETU70_delays_ns]
+    # fading_block = channels.selective_fading_model(
+    #     _NUM_SINUSOIDS,
+    #     _ETU70_fD / float(samp_rate),
+    #     _LOS,
+    #     _KFACTOR,
+    #     int(seed),
+    #     delays,
+    #     _ETU70_mags,
+    #     _NTAPS,
+    # )
+
+
+    delays = [float(d) * 1e-9 for d in _ETU70_delays_ns]
+    mags = [float(m) for m in _ETU70_mags]
+    gr_seed = int(seed) % (2**31 - 1)
+    if gr_seed == 0:
+        gr_seed = 1
+
+    fading_block = channels.selective_fading_model(
+        int(_NUM_SINUSOIDS),
+        float(_ETU70_fD) / float(samp_rate),
+        bool(_LOS),
+        float(_KFACTOR),
+        gr_seed,
+        delays,
+        mags,
+        int(_NTAPS),
+    )
+
+    src = blocks.vector_source_c(np.asarray(samples, dtype=np.complex64).tolist(), False, 1, [])
+    snk = blocks.vector_sink_c()
+    tb = gr.top_block()
+    tb.connect(src, fading_block, snk)
+    tb.run()
+    return np.asarray(snk.data(), dtype=np.complex64)
+    
+
+# def _etu70_fading(
+#     samples: np.ndarray,
+#     samp_rate: float,
+#     rng: np.random.Generator = None,
+#     seed: int = None,
+#     backend: str = CHANNEL_FADING_BACKEND,
+# ) -> np.ndarray:
+#     if seed is None:
+#         if rng is not None:
+#             seed = int(rng.integers(0, np.iinfo(np.int32).max))
+#         else:
+#             seed = 0
+
+#     selected = str(backend).lower()
+#     if selected == 'auto':
+#         selected = 'gnuradio' 
+#         # if GR_AVAILABLE else 'numpy'
+
+#     # Lets not use any fading_numpy. We can expect user to install GNURADIO.
+
+#     if selected == 'gnuradio':
+#         # if GR_AVAILABLE:
+#         return _etu70_fading_gnuradio(samples, samp_rate, seed)
+#         # print('[WARN] GNU Radio not available; falling back to NumPy ETU70 approximation.')
+#         # return _etu70_fading_numpy(samples, samp_rate, rng=rng, seed=seed)
+
+#     # if selected == 'numpy':
+#     #     return _etu70_fading_numpy(samples, samp_rate, rng=rng, seed=seed)
+
+#     raise ValueError(f"Unsupported fading backend '{backend}'. Use 'gnuradio', 'numpy', or 'auto'.")
 
 
 def apply_channel_pipeline(
@@ -214,8 +319,14 @@ def apply_channel_pipeline(
         while (XO_val[i] >  clockeffects_dict['XO_maxdeviation']) or \
               (XO_val[i] < -clockeffects_dict['XO_maxdeviation']):
             XO_val[i] = clockeffects_dict['XO_standardDeviation'] * rng.standard_normal() + XO_val[i - 1]
-
-    samples_faded = _etu70_fading_numpy(clean_signal, samp_rate, rng=rng)
+    samples_faded = _etu70_fading_gnuradio(clean_signal, samp_rate, seed)
+    # samples_faded = _etu70_fading(
+    #     clean_signal,
+    #     samp_rate,
+    #     rng=rng,
+    #     seed=seed,
+    #     backend=fading_backend,
+    # )
     samples_cfo   = CFOArtifact(samples_faded, XO_val, clockeffects_dict, samp_rate)
     samples_phase = phaseOffset(samples_cfo, rng=rng)
     return np.asarray(samples_phase, dtype=np.complex64)
@@ -275,9 +386,9 @@ def _decimate(x: np.ndarray, fs_raw: float, D: int, use_gpu: bool = False, fs_ef
 #   4. Interpolate 513 -> 1024 bins
 #   5. Normalize to [0, 1]
 # ─────────────────────────────────────────────────────────────────────────────
-def _welch_1024(x_in: np.ndarray, fs_eff: float, Nz: int) -> np.ndarray:
+def _welch_1024(x_in: np.ndarray, fs_eff: float, Nz: int) -> dict:
     """
-    Compute 1024-point Welch PSD feature from a complex IQ array.
+    Compute 1024-point Welch PSD feature and IFFT from a complex IQ array.
 
     Args:
         x_in:   Complex IQ (already decimated, or raw for no-dec mode).
@@ -285,7 +396,9 @@ def _welch_1024(x_in: np.ndarray, fs_eff: float, Nz: int) -> np.ndarray:
         Nz:     Zero-padding length (pre-computed so (len(x_in)+Nz) % Nc == 0).
 
     Returns:
-        1024-point float32 PSD frame normalized to [0, 1].
+        dict with keys:
+            'psd':  1024-point float32 PSD frame normalized to [0, 1]
+            'ifft': 1024-point float32 IFFT magnitude normalized to [0, 1]
     """
     Nc       = CREPE_FRAME_LENGTH   # 1024
     noverlap = Nc // 2              # 512  (50% overlap, per notes)
@@ -298,9 +411,11 @@ def _welch_1024(x_in: np.ndarray, fs_eff: float, Nz: int) -> np.ndarray:
     s_pad = np.concatenate([s, np.zeros(Nz, dtype=np.float64)]) # zero padding
 
     # Step 3
-    nperseg  = min(Nc, len(s_pad))
-    if nperseg < 4:
-        return np.zeros(Nc, dtype=np.float32)
+    # Venkat: removing the handling of corner case where len(s_pad) is likely less than Nc, that will never be the case.
+    # Since this is not production level code, it is better to remove this to avoid complex and lengthy code.
+    nperseg  = Nc #min(Nc, len(s_pad))
+    # if nperseg < 4:
+    #     return {'psd': np.zeros(Nc, dtype=np.float32), 'ifft': np.zeros(Nc, dtype=np.float32)}
     _noverlap = min(noverlap, nperseg - 1)
 
     _, psd = signal.welch(
@@ -319,20 +434,34 @@ def _welch_1024(x_in: np.ndarray, fs_eff: float, Nz: int) -> np.ndarray:
     # this is because the signal is real and we can get the same information from one sided PSD, 
   
 
-    # Step 4
+    # Step 4: Process PSD
     psd = np.asarray(psd, dtype=np.float64)
     psd[~np.isfinite(psd)] = 0.0
     psd   = np.maximum(psd, 1e-20)
-    # src   = np.linspace(0.0, 1.0, len(psd), endpoint=True)
-    # dst   = np.linspace(0.0, 1.0, Nc, endpoint=True)
-    frame = psd#np.interp(dst, src, psd).astype(np.float32)
-    # since we are taking two sided PSD we do not need the interpolation
-    # Step 5
-    # we are doing normalization here to keep range of values within 0 to 1 for the values in a frame.
-    mx = frame.max()
+    frame_psd = psd
+    
+    # Step 5: Normalize PSD to [0, 1]
+    mx = frame_psd.max()
     if mx > 1e-12:
-        frame /= mx
-    return frame
+        frame_psd /= mx
+    
+    # Compute IFFT of the complex signal
+    # Pad complex signal to Nc samples for FFT
+    # We need to do IFFT of PSD and not the FFT, since we lose benefits of reducing noise variance via Welch based PSD averaging then.
+    #x_pad = np.concatenate([x_in, np.zeros(Nz, dtype=np.complex64)])
+    #x_fft = np.fft.fft(x_pad[:Nc])
+    x_ifft = np.fft.ifft(psd)
+    frame_ifft = np.abs(x_ifft).astype(np.float64)
+    
+    # Normalize IFFT to [0, 1]
+    mx_ifft = frame_ifft.max()
+    if mx_ifft > 1e-12:
+        frame_ifft /= mx_ifft
+    
+    return {
+        'psd': frame_psd.astype(np.float32),
+        'ifft': frame_ifft.astype(np.float32),
+    }
 
 
 def extract_welch_frame(
@@ -340,7 +469,7 @@ def extract_welch_frame(
     case_idx:      int,
     no_decimation: bool = False,
     use_gpu:       bool = False,
-) -> np.ndarray:
+) -> dict:
     """
     Full feature extraction for one noisy IQ capture.
 
@@ -349,9 +478,8 @@ def extract_welch_frame(
         case_idx:      Case 1-4 (determines D and fs_eff in decimated mode).
         no_decimation: If True, skip LPF/decimation (OR branch from notes).
         use_gpu:       Use CuPy for decimation if available.
-        fs_eff:        Effective sample rate (used if fs_eff is None).
     Returns:
-        1024-point float32 normalized Welch PSD frame.
+        dict with keys 'psd' and 'ifft', each containing 1024-point float32 normalized frames.
     """
     if no_decimation:
         # OR branch: no filtering, full N_RAW samples at native 25 MHz
@@ -372,7 +500,7 @@ def extract_welch_frame(
 # Signal / noise helpers (unchanged interface)
 # ─────────────────────────────────────────────────────────────────────────────
 from generate_crepe_data import (
-    generate_dirac_comb_signal,
+    generate_dirac_comb_signal_original, generate_dirac_comb_signal,
     add_complex_noise,
 )
 
@@ -389,7 +517,7 @@ def process_frame(args):
     bin_idx = freq_to_model_bin(f_h, f1, f2)
     frame_rng = np.random.default_rng(int(frame_seed))
     
-    clean_signal = generate_dirac_comb_signal(
+    clean_signal = generate_dirac_comb_signal_original(
         F_h=f_h, Fs=FS_NATIVE,
         duration=CAPTURE_DURATION_S, duty_cycle=DUTY_CYCLE,
     )
@@ -398,6 +526,7 @@ def process_frame(args):
         clean_signal=clean_signal,
         samp_rate=FS_NATIVE,
         rng=frame_rng,
+        seed = frame_seed,
     )
     
     frame_dict = {}
@@ -405,18 +534,44 @@ def process_frame(args):
         noise_rng = np.random.default_rng(int(frame_rng.integers(0, 2**32, dtype=np.uint32)))
         noisy_signal = add_complex_noise(signal_no_awgn, snr, noise_rng)
         
-        frame = extract_welch_frame(
+        features = extract_welch_frame(
             noisy_signal=noisy_signal,
             case_idx=case_idx,
             no_decimation=no_decimation,
+            use_gpu=use_gpu,
         )
         
-        key = (
+        key_base = (
             f"BIN_{bin_idx:03d}_SNR_{snr:+03d}_IDX_{frame_idx:05d}"
             f"_FH_{f_h:09.1f}_CASE_{case_idx}_{'NODEC' if no_decimation else 'WITHDEC'}"
         )
-        frame_dict[key] = frame
+        
+        # Store both PSD and IFFT with descriptive suffixes
+        frame_dict[f"{key_base}_PSD"] = features['psd']
+        frame_dict[f"{key_base}_IFFT"] = features['ifft']
     return frame_dict
+
+
+def _run_frame_jobs(args_list, n_workers: int, desc: str):
+    """
+    Run frame generation either serially or with multiprocessing.
+
+    Serial execution is used for a single worker because it avoids the
+    pickling/start-method issues that often show up in IDE runs on macOS.
+    """
+    if n_workers == 1:
+        return [process_frame(args) for args in tqdm(args_list, total=len(args_list), desc=desc)]
+
+    try:
+        with mp.Pool(processes=n_workers) as pool:
+            return list(tqdm(pool.imap(process_frame, args_list), total=len(args_list), desc=desc))
+    except Exception as exc:
+        raise RuntimeError(
+            "Multiprocessing failed while creating or running the worker pool. "
+            "This is commonly caused by start-method/pickling issues in IDE or macOS runs. "
+            "Try rerunning with '--n_workers 1' to confirm the underlying DSP path works. "
+            f"Platform={sys.platform}, requested_workers={n_workers}."
+        ) from exc
 
 
 def generate_unified_case_dataset(
@@ -500,12 +655,15 @@ def generate_unified_case_dataset(
         (frame_idx, float(fh_values[frame_idx]), case_idx, snr_list, no_decimation, use_gpu, int(frame_seeds[frame_idx]), f1, f2)
         for frame_idx in range(n_input_frames)
     ]
-
+    
     if n_workers is None:
         n_workers = mp.cpu_count()
 
-    with mp.Pool(processes=n_workers) as pool:
-        results = list(tqdm(pool.imap(process_frame, args_list), total=n_input_frames, desc=f"Case-{case_idx} [{mode_tag}] frames"))
+    results = _run_frame_jobs(
+        args_list=args_list,
+        n_workers=n_workers,
+        desc=f"Case-{case_idx} [{mode_tag}] frames",
+    )
 
     # Combine results
     iq_dict = {}
@@ -536,10 +694,9 @@ def save_dataset_info(
     snr_values = []
     for k in iq_dict:
         parts = k.split('_')
-        try:
-            snr_values.append(int(parts[parts.index('SNR') + 1]))
-        except (ValueError, IndexError):
-            pass
+        ## Why is a 1 added ?
+        snr_values.append(int(parts[parts.index('SNR') + 1]))
+  
 
     if no_decimation:
         D, fs_eff, ND, Nz = 1, FS_NATIVE, _NO_DEC_ND, _NO_DEC_NZ
@@ -575,9 +732,14 @@ def save_dataset_info(
         fh.write(f"  3. Zero-pad {Nz} zeros  [total length = {ND+Nz}]\n")
         fh.write("  4. Welch PSD (nperseg=1024, noverlap=512, Kaiser beta=10, nfft=1024)\n")
         fh.write("  5. Interpolate 513 -> 1024 bins\n")
-        fh.write("  6. Normalize to [0, 1]\n\n")
+        fh.write("  6. Normalize to [0, 1]\n")
+        fh.write("  7. Compute IFFT of PSD\n")
+        fh.write("  8. Normalize IFFT to [0, 1]\n\n")
+        fh.write("FEATURES SAVED (per SNR level):\n")
+        fh.write("  - {key}_PSD:   1024-point Welch PSD (Power Spectral Density)\n")
+        fh.write("  - {key}_IFFT:  1024-point IFFT magnitude (Inverse Fast Fourier Transform)\n\n")
         fh.write(f"SNR levels: {sorted(set(snr_values))}\n")
-        fh.write(f"Total samples: {len(iq_dict):,}\n")
+        fh.write(f"Total samples: {len(iq_dict):,}  (= {len(iq_dict)//2:,} frames × 2 features × {len(set(snr_values)) if set(snr_values) else 'N/A'} SNR levels)\n")
         fh.write(f"Output pickle: {output_path}\n")
         fh.write("=" * 80 + "\n")
 
@@ -593,8 +755,7 @@ def _run_single_case(
     use_gpu:        bool,
     no_decimation:  bool = False,
     date_tag:       str  = '',
-    n_workers:      int = None,
-) -> None:
+    n_workers:      int = None,) -> None:
     suffix   = '_nodec' if no_decimation else '_unified'
     tag      = f'_{date_tag}' if date_tag else suffix
     filename = f'iq_dict_case{case_idx}{tag}.pkl'
@@ -629,13 +790,14 @@ Examples:
     python unifiedGenerate_venkatesh_fast.py --case 2 --output_dir ./out/ --date_tag 15apr
         """,
     )
+    case_choices = [str(i) for i in range(1, total_cases + 1)] + ['ALL']
     parser.add_argument(
         '--case', type=str, default='ALL',
-        choices=['1', '2', '3', '4', 'ALL'],
+        choices=case_choices,
         help='Case index 1-4 or ALL. Determines [f1,f2] frequency range.',
     )
     parser.add_argument(
-        '--no_decimation', action='store_true', default=False,
+        '--no_decimation', action='store_true', default=True,
         help=(
             'OR mode (from notes): skip LPF/decimation entirely. '
             'Uses full N=250,000 raw 25 MHz samples directly. '
@@ -644,7 +806,7 @@ Examples:
         ),
     )
     parser.add_argument('--output_dir',     type=str, default='./results/')
-    parser.add_argument('--n_input_frames', type=int, default=33333)
+    parser.add_argument('--n_input_frames', type=int, default=10)
     parser.add_argument('--date_tag',       type=str, default='')
     parser.add_argument(
         '--backend', type=str, default='auto', choices=['auto', 'cpu', 'gpu'],
@@ -654,6 +816,10 @@ Examples:
         '--n_workers', type=int, default=None,
         help='Number of parallel workers for frame processing (default: CPU count).',
     )
+    # parser.add_argument(
+    #     '--fading_backend', type=str, default='auto', choices=['auto', 'numpy', 'gnuradio'],
+    #     help='ETU70 fading implementation to use.',
+    # )
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -669,11 +835,12 @@ Examples:
 
     print(f"CuPy available  : {GPU_AVAILABLE}")
     print(f"Backend         : {'GPU(CuPy)' if use_gpu else 'CPU(SciPy)'}")
+    # print(f"Fading backend  : {args.fading_backend}")
     print(f"Mode            : {'no-decimation (OR)' if args.no_decimation else 'decimated'}")
     print(f"Workers         : {args.n_workers or mp.cpu_count()}")
     print()
 
-    cases_to_run = [1, 2, 3, 4] if args.case == 'ALL' else [int(args.case)]
+    cases_to_run = range(1, total_cases+1) if args.case == 'ALL' else [int(args.case)]
     for c in cases_to_run:
         _run_single_case(
             case_idx=c,

@@ -59,12 +59,8 @@ def crepe_bin_to_hz(bin_idx: int) -> float:
     cents = CENTS_OFFSET + bin_idx * CREPE_CENTS_PER_BIN
     return cents_to_hz(cents)
 
-
-# =============================================================================
-# RF Signal Generation (Dirac Comb + Rectangular Pulse approach)
-# =============================================================================
-
-def generate_dirac_comb_signal(
+# This generates dirac comb using convolution function - the original way.
+def generate_dirac_comb_signal_original(
     F_h: float, 
     Fs: float, 
     duration: float, 
@@ -126,36 +122,104 @@ def generate_dirac_comb_signal(
     
     return rect_tr.astype(np.float32)
 
+# =============================================================================
+# RF Signal Generation (Dirac Comb + Rectangular Pulse approach)
+# =============================================================================
 
-def generate_harmonic_rf_signal(
+def generate_dirac_comb_signal(
     F_h: float, 
     Fs: float, 
     duration: float, 
-    duty_cycle: float = 0.1,
-    n_harmonics: int = 8,
-    harmonic_decay: float = 1.5,
-    phase_noise: bool = True
+    duty_cycle: float = 0.1
 ) -> np.ndarray:
     """
-    Generate a signal using Dirac comb approach (like DiracCombPlots.py).
+    Generate a pulse train signal using Dirac comb convolved with rectangular pulse.
     
-    This creates a pulse train by convolving a rectangular pulse with a Dirac comb,
-    which naturally produces harmonics at multiples of F_h.
+    This follows the approach from DiracCombPlots.py:
+    1. Create a rectangular pulse of width T = duty_cycle * T_h
+    2. Create a Dirac comb with period T_h = 1/F_h
+    3. Convolve them to get the pulse train
     
     Args:
-        F_h: Fundamental frequency in Hz
+        F_h: Fundamental frequency in Hz (pulse repetition rate)
         Fs: Sampling rate in Hz
         duration: Duration in seconds
-        duty_cycle: Duty cycle of the rectangular pulse (0 to 1)
-        n_harmonics: Not used (kept for API compatibility)
-        harmonic_decay: Not used (kept for API compatibility)
-        phase_noise: Not used (kept for API compatibility)
+        duty_cycle: Duty cycle of the pulse (0 to 1)
     
     Returns:
         Real-valued pulse train signal (baseband)
     """
-    # Use the Dirac comb approach
-    return generate_dirac_comb_signal(F_h, Fs, duration, duty_cycle)
+    Ts = 1 / Fs  # Sampling period
+    T_h = 1 / F_h  # Period of the pulse train
+    T = T_h * duty_cycle  # Duration of each pulse
+
+    n_samples = int(duration * Fs)
+
+    # Match the original construction, where the rectangular pulse lives inside
+    # one period and is centered around each Dirac-comb impulse.
+    n_samples_period = max(1, int(T_h / Ts))
+    center = n_samples_period // 2
+    pulse_width = max(1, int(round(duty_cycle * n_samples_period)))
+    half_width = pulse_width // 2
+
+    # Directly stamp the pulse intervals into a difference array instead of
+    # convolving a long pulse shape with the full Dirac comb. This preserves
+    # the pulse-train structure while avoiding the very slow O(N*M) convolution
+    # path that becomes expensive for low F_h / large period lengths.
+    diff = np.zeros(n_samples + 1, dtype=np.float32)
+
+    impulse_times = np.arange(T_h, duration, T_h)
+    impulse_indices = np.rint(impulse_times / Ts).astype(int)
+    impulse_indices = impulse_indices[impulse_indices < n_samples]
+
+    for impulse_idx in impulse_indices:
+        start = impulse_idx - center + (center - half_width)
+        end = start + pulse_width
+        start = max(0, start)
+        end = min(n_samples, end)
+        if start < end:
+            diff[start] += 1.0
+            diff[end] -= 1.0
+
+    rect_tr = np.cumsum(diff[:-1], dtype=np.float32)
+    
+    # Normalize to unit power
+    power = np.mean(rect_tr ** 2)
+    if power > 0:
+        rect_tr = rect_tr / np.sqrt(power)
+    
+    return rect_tr.astype(np.float32)
+
+
+# def generate_harmonic_rf_signal(
+#     F_h: float, 
+#     Fs: float, 
+#     duration: float, 
+#     duty_cycle: float = 0.1,
+#     n_harmonics: int = 8,
+#     harmonic_decay: float = 1.5,
+#     phase_noise: bool = True
+# ) -> np.ndarray:
+#     """
+#     Generate a signal using Dirac comb approach (like DiracCombPlots.py).
+    
+#     This creates a pulse train by convolving a rectangular pulse with a Dirac comb,
+#     which naturally produces harmonics at multiples of F_h.
+    
+#     Args:
+#         F_h: Fundamental frequency in Hz
+#         Fs: Sampling rate in Hz
+#         duration: Duration in seconds
+#         duty_cycle: Duty cycle of the rectangular pulse (0 to 1)
+#         n_harmonics: Not used (kept for API compatibility)
+#         harmonic_decay: Not used (kept for API compatibility)
+#         phase_noise: Not used (kept for API compatibility)
+    
+#     Returns:
+#         Real-valued pulse train signal (baseband)
+#     """
+#     # Use the Dirac comb approach
+#     return generate_dirac_comb_signal(F_h, Fs, duration, duty_cycle)
 
 
 def add_complex_noise(signal: np.ndarray, snr_db: float, rng: np.random.Generator) -> np.ndarray:
@@ -365,7 +429,7 @@ def visualize_dataset(iq_dict: dict, n_samples: int = 6):
 
 if __name__ == "__main__":
     OUTPUT_DIR = './IQData/'
-    OUTPUT_FILE = 'iq_dict_crepe_dirac_comb_SNR_minus10_20_discrete.pkl'
+    OUTPUT_FILE = 'iq_dict_crepe_dirac_comb_SNR15_20.pkl'
     OUTPUT_PATH = os.path.join(OUTPUT_DIR, OUTPUT_FILE)
     
     # Strategy: Generate dense coverage using Dirac comb approach
@@ -378,12 +442,12 @@ if __name__ == "__main__":
     bins_to_generate = list(range(0, 360))  # Every other bin
     
     # Duty cycle (same as DiracCombPlots.py default)
-    duty_cycle = 0.5
+    duty_cycle = 0.1
     
     iq_dict = generate_crepe_dataset_dense(
         output_path=OUTPUT_PATH,
         bins_to_generate=bins_to_generate,  # 360 bins
-        snr_list=list(range(-10, 21)),  # SNR range: 15 to 20 dB
+        snr_list=list(range(15, 21)),  # SNR range: 15 to 20 dB
         samples_per_bin_snr=161,  # Increased from 161 for more augmentation
         duty_cycle=duty_cycle,
         seed=42
