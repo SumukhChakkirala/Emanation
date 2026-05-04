@@ -517,7 +517,7 @@ def process_frame(args):
     bin_idx = freq_to_model_bin(f_h, f1, f2)
     frame_rng = np.random.default_rng(int(frame_seed))
     
-    clean_signal = generate_dirac_comb_signal_original(
+    clean_signal = generate_dirac_comb_signal(
         F_h=f_h, Fs=FS_NATIVE,
         duration=CAPTURE_DURATION_S, duty_cycle=DUTY_CYCLE,
     )

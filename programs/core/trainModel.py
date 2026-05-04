@@ -21,6 +21,7 @@ from typing import Tuple, List, Dict, Optional
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split 
+from datetime import datetime
 
 # =============================================================================
 # Constants
@@ -33,11 +34,15 @@ CREPE_CENTS_PER_BIN = 20
 DEFAULT_RF_FMIN = 32.7
 DEFAULT_RF_FMAX = 2069.0
 CASE_RF_RANGES = {
-    '1': (80e3, 2.5e6),
-    '2': (30.0, 1e3),
-    '3': (1e3, 33e3),
-    '4': (33e3, 100e3),
+    '1': (81457, 1250000),
+    '2': (5308, 81457),
+    '3': (346, 5308),
+    '4': (30, 3456),
 }
+# [81457.1, 1250000.0]
+# [5308.2, 81457.1]
+# [345.9, 5308.2]
+# [30.0, 345.9]
 
 
 def _infer_case_from_path(data_path: str) -> Optional[str]:
@@ -474,20 +479,26 @@ def train_epoch(model, dataloader, criterion, optimizer, device, epoch):
     
     return total_loss / len(dataloader)
 
+def get_model_state_dict(model: nn.Module):
+    """Return the underlying model weights, even when wrapped for multi-GPU."""
+    if isinstance(model, nn.DataParallel):
+        return model.module.state_dict()
+    return model.state_dict()
+
 
 def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Train CREPE model with configurable SNR range')
-    parser.add_argument('--data_path', type=str, default='C:\\Users\\User1\\Downloads\\Emanation\\Results\\iq_dict_case1.pkl',
+    parser.add_argument('--data_path', type=str, default='/home/vesathya/Emanations/DLPitchEstimation/Emanation/programs/Venkatesh/results_fulldataset_Apr30th/iq_dict_case1_nodec.pkl',
                         help='Path to training dataset pickle')
     parser.add_argument('--save_dir', type=str, default='./models_crepe/',
                         help='Directory to save checkpoints/results')
-    parser.add_argument('--case', type=str, default='AUTO', choices=['AUTO', '1', '2', '3', '4'])
+    parser.add_argument('--case', type=str, default='1', choices=[ '1', '2', '3', '4'])
     parser.add_argument('--rf_fmin', type=float, default=None)
     parser.add_argument('--rf_fmax', type=float, default=None)
-    parser.add_argument('--snr_min', type=int, default=-6, help='Minimum SNR (default: -10)')
-    parser.add_argument('--snr_max', type=int, default=-10, help='Maximum SNR (default: 20)')
-    parser.add_argument('--model_suffix', type=str, default='snr_15_20(18-3)', help='Suffix for model files')
+    parser.add_argument('--snr_min', type=int, default=-10, help='Minimum SNR (default: -10)')
+    parser.add_argument('--snr_max', type=int, default=20, help='Maximum SNR (default: 20)')
+    parser.add_argument('--model_suffix', type=str, default='snr_mius10_20(03-05)', help='Suffix for model files')
     parser.add_argument('--input_feature', type=str, default='raw', choices=['raw', 'fftshift'],
                         help='Input feature for CNN: raw (existing behavior) or fftshift (test-2 mode)')
     parser.add_argument('--batch_size', type=int, default=64, help='Batch size')
@@ -499,9 +510,11 @@ def main():
                         help='Gaussian sigma for label smoothing (in cents domain used by label function)')
     parser.add_argument('--patience', type=int, default=5, help='Early stopping patience')
     parser.add_argument('--lr_patience', type=int, default=2, help='LR scheduler patience')
+    parser.add_argument('--multi_gpu', action='store_true',
+                        help='Use all visible CUDA GPUs with torch.nn.DataParallel')
     args = parser.parse_args()
-
-    case_arg = '' if args.case == 'AUTO' else args.case
+    #case_arg = '' if args.case == 'AUTO' else args.case
+    case_arg = args.case
     rf_fmin, rf_fmax, rf_range_source = _resolve_rf_range(args.data_path, case_arg, args.rf_fmin, args.rf_fmax)
     
     # Configuration block - EDIT THESE VALUES DIRECTLY
@@ -519,13 +532,14 @@ def main():
         'save_dir': args.save_dir,
         'patience': args.patience,
         'lr_patience': args.lr_patience,
-        'case': case_arg if case_arg else 'AUTO',
+        'case': case_arg,
         'rf_fmin': rf_fmin,
         'rf_fmax': rf_fmax,
         'rf_range_source': rf_range_source,
         'snr_range': (args.snr_min, args.snr_max),
-        'model_suffix': args.model_suffix,
+        'model_suffix': f"{args.model_suffix}_bs{args.batch_size}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
         'input_feature': args.input_feature,
+        'multi_gpu': args.multi_gpu,
     }
     
     print("=" * 80)
@@ -556,15 +570,19 @@ def main():
     all_frames = list(iq_dict.keys())
     print(f"found {len(all_frames)} frames")
 
+    train_temp, test_frames = train_test_split(all_frames, test_size=0.2, random_state=42)
+    train_frames, val_frames = train_test_split(train_temp, test_size=0.25, random_state=42)
+    split_name = "60/20/20"
+
     # Use 60/20/20 split for Case 2 (lowest-range), standard 5/5/90 split otherwise
-    if case_arg == '2':
-        train_temp, test_frames = train_test_split(all_frames, test_size=0.2, random_state=42)
-        train_frames, val_frames = train_test_split(train_temp, test_size=0.25, random_state=42)
-        split_name = "60/20/20"
-    else:
-        train_frames, temp_frames = train_test_split(all_frames, test_size=0.8, random_state=42)
-        val_frames, test_frames = train_test_split(temp_frames, test_size=7/8, random_state=42)
-        split_name = "5/5/90"
+    # if case_arg == '2':
+    #     train_temp, test_frames = train_test_split(all_frames, test_size=0.2, random_state=42)
+    #     train_frames, val_frames = train_test_split(train_temp, test_size=0.25, random_state=42)
+    #     split_name = "60/20/20"
+    # else:
+    #     train_frames, temp_frames = train_test_split(all_frames, test_size=0.8, random_state=42)
+    #     val_frames, test_frames = train_test_split(temp_frames, test_size=7/8, random_state=42)
+    #     split_name = "60/20/20"
 
     print(f"\n📊 Train/Val/Test split (Random {split_name}):")
     print(f"  Train frames: {len(train_frames)} ({100*len(train_frames)/len(all_frames):.0f}%)")
@@ -608,6 +626,16 @@ def main():
     device = torch.device(config['device'])
     model = model.to(device)
     
+    if args.multi_gpu:
+        if device.type != 'cuda':
+            print("[WARN] --multi_gpu requested but CUDA is not available; using CPU.")
+        elif torch.cuda.device_count() < 2:
+            print("[WARN] --multi_gpu requested but only one CUDA GPU is visible; using single GPU.")
+        else:
+            gpu_names = [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())]
+            model = nn.DataParallel(model)
+            print(f"[OK] DataParallel enabled on {torch.cuda.device_count()} GPUs: {gpu_names}")
+
     # Count parameters
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"[OK] Model created: {n_params:,} trainable parameters")
@@ -704,7 +732,7 @@ def main():
             patience_counter = 0
             torch.save({
                 'epoch': epoch,
-                'model_state_dict': model.state_dict(),
+                'model_state_dict': get_model_state_dict(model),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'val_loss': val_loss,
                 'config': config,
@@ -720,7 +748,8 @@ def main():
                 break
     
     # Save final model and history
-    torch.save(model.state_dict(), os.path.join(config['save_dir'], f"crepe_final_{config['model_suffix']}.pth"))
+    # torch.save(model.state_dict(), os.path.join(config['save_dir'], f"crepe_final_{config['model_suffix']}.pth"))
+    torch.save(get_model_state_dict(model), os.path.join(config['save_dir'], f"crepe_final_{config['model_suffix']}.pth"))
     with open(os.path.join(config['save_dir'], f"training_history_{config['model_suffix']}.pkl"), 'wb') as f:
         pickle.dump(history, f)
     
